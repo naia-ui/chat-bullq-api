@@ -13,16 +13,20 @@ import { ConversationsRepository } from './conversations/conversations.repositor
 import { MessagesController } from './messages/messages.controller';
 import { MessagesService } from './messages/messages.service';
 import { MessagesRepository } from './messages/messages.repository';
+import { ContactsController } from './contacts/contacts.controller';
+import { ContactsService } from './contacts/contacts.service';
+import { ContactsRepository } from './contacts/contacts.repository';
 
 @Module({
   imports: [
     BullModule.registerQueue(
       { name: 'inbound-messages' },
       { name: 'outbound-messages' },
+      { name: 'chatbot-processor' },
     ),
     ChannelHubModule,
   ],
-  controllers: [ConversationsController, MessagesController],
+  controllers: [ConversationsController, MessagesController, ContactsController],
   providers: [
     IdempotencyService,
     ContactResolverService,
@@ -34,7 +38,9 @@ import { MessagesRepository } from './messages/messages.repository';
     ConversationsRepository,
     MessagesService,
     MessagesRepository,
+    ContactsService,
+    ContactsRepository,
   ],
-  exports: [ConversationsService, MessagesService, ConversationFsmService],
+  exports: [ConversationsService, MessagesService, ConversationFsmService, ContactsService],
 })
 export class MessagingModule {}

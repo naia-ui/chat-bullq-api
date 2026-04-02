@@ -8,6 +8,12 @@ import { ChannelsRepository } from './channels/channels.repository';
 import { ZappfyModule } from './adapters/zappfy/zappfy.module';
 import { ZappfyInboundAdapter } from './adapters/zappfy/zappfy.inbound-adapter';
 import { ZappfyOutboundAdapter } from './adapters/zappfy/zappfy.outbound-adapter';
+import { WhatsAppOfficialModule } from './adapters/whatsapp-official/whatsapp-official.module';
+import { WhatsAppOfficialInboundAdapter } from './adapters/whatsapp-official/whatsapp-official.inbound-adapter';
+import { WhatsAppOfficialOutboundAdapter } from './adapters/whatsapp-official/whatsapp-official.outbound-adapter';
+import { InstagramModule } from './adapters/instagram/instagram.module';
+import { InstagramInboundAdapter } from './adapters/instagram/instagram.inbound-adapter';
+import { InstagramOutboundAdapter } from './adapters/instagram/instagram.outbound-adapter';
 
 @Module({
   imports: [
@@ -21,6 +27,8 @@ import { ZappfyOutboundAdapter } from './adapters/zappfy/zappfy.outbound-adapter
       { name: 'sla-timers' },
     ),
     ZappfyModule,
+    WhatsAppOfficialModule,
+    InstagramModule,
   ],
   controllers: [WebhookGatewayController, ChannelsController],
   providers: [ChannelAdapterRegistry, ChannelsService, ChannelsRepository],
@@ -31,9 +39,15 @@ export class ChannelHubModule implements OnModuleInit {
     private readonly registry: ChannelAdapterRegistry,
     private readonly zappfyInbound: ZappfyInboundAdapter,
     private readonly zappfyOutbound: ZappfyOutboundAdapter,
+    private readonly waOfficialInbound: WhatsAppOfficialInboundAdapter,
+    private readonly waOfficialOutbound: WhatsAppOfficialOutboundAdapter,
+    private readonly instagramInbound: InstagramInboundAdapter,
+    private readonly instagramOutbound: InstagramOutboundAdapter,
   ) {}
 
   onModuleInit() {
     this.registry.register(this.zappfyInbound, this.zappfyOutbound);
+    this.registry.register(this.waOfficialInbound, this.waOfficialOutbound);
+    this.registry.register(this.instagramInbound, this.instagramOutbound);
   }
 }

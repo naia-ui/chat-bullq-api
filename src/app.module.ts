@@ -12,6 +12,8 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { RoutingModule } from './modules/routing/routing.module';
 import { QuickRepliesModule } from './modules/quick-replies/quick-replies.module';
 import { TagsModule } from './modules/tags/tags.module';
+import { ChatbotModule } from './modules/chatbot/chatbot.module';
+import { DashboardModule } from './modules/dashboard/dashboard.module';
 import redisConfig from './config/redis.config';
 
 @Module({
@@ -37,6 +39,8 @@ import redisConfig from './config/redis.config';
     RoutingModule,
     QuickRepliesModule,
     TagsModule,
+    ChatbotModule,
+    DashboardModule,
   ],
 })
 export class AppModule {}

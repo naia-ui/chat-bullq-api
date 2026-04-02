@@ -1,13 +1,13 @@
-import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { Processor, WorkerHost, InjectQueue } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
-import { Job } from 'bullmq';
+import { Job, Queue } from 'bullmq';
 import { PrismaService } from '../../../database/prisma.service';
 import { IdempotencyService } from './idempotency.service';
 import { ContactResolverService } from './contact-resolver.service';
 import { ConversationResolverService } from './conversation-resolver.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
-import { NormalizedInboundMessage, MessageContentType } from '../../channel-hub/ports/types';
-import { MessageDirection, MessageContentType as PrismaContentType, MessageStatus } from '@prisma/client';
+import { NormalizedInboundMessage } from '../../channel-hub/ports/types';
+import { MessageDirection, MessageContentType as PrismaContentType, MessageStatus, ConversationStatus } from '@prisma/client';
 
 interface InboundJobData {
   channelId: string;
@@ -25,6 +25,7 @@ export class InboundMessageProcessor extends WorkerHost {
     private readonly contactResolver: ContactResolverService,
     private readonly conversationResolver: ConversationResolverService,
     private readonly realtimeGateway: RealtimeGateway,
+    @InjectQueue('chatbot-processor') private readonly chatbotQueue: Queue,
   ) {
     super();
   }
@@ -86,6 +87,26 @@ export class InboundMessageProcessor extends WorkerHost {
       message: savedMessage,
     });
 
+    if (status === ConversationStatus.BOT || status === ConversationStatus.PENDING) {
+      const hasActiveBot = await this.checkActiveBotForChannel(channelId);
+      if (hasActiveBot) {
+        if (status === ConversationStatus.PENDING) {
+          await this.prisma.conversation.update({
+            where: { id: conversationId },
+            data: { status: ConversationStatus.BOT },
+          });
+        }
+        await this.chatbotQueue.add('process-bot', {
+          conversationId,
+          channelId,
+          contactExternalId: message.externalContactId,
+          organizationId,
+          messageText: (message.content as any)?.text || '',
+        });
+        this.logger.log(`Routed to chatbot: conv=${conversationId}`);
+      }
+    }
+
     this.logger.log(
       `Inbound processed: msg=${savedMessage.id} conv=${conversationId} contact=${contactId} type=${message.type}`,
     );
@@ -96,6 +117,16 @@ export class InboundMessageProcessor extends WorkerHost {
       contactId,
       conversationStatus: status,
     };
+  }
+
+  private async checkActiveBotForChannel(channelId: string): Promise<boolean> {
+    const link = await this.prisma.chatbotFlowChannel.findFirst({
+      where: {
+        channelId,
+        flow: { isActive: true, deletedAt: null },
+      },
+    });
+    return !!link;
   }
 
   private async processStatus(data: any): Promise<any> {

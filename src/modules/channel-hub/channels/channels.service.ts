@@ -10,6 +10,8 @@ import { CreateChannelDto } from './dto/create-channel.dto';
 import { UpdateChannelDto } from './dto/update-channel.dto';
 import { ChannelAdapterRegistry } from '../channel-adapter.registry';
 import { ZappfyHttpClient } from '../adapters/zappfy/zappfy.http-client';
+import { WhatsAppOfficialHttpClient } from '../adapters/whatsapp-official/whatsapp-official.http-client';
+import { InstagramHttpClient } from '../adapters/instagram/instagram.http-client';
 
 @Injectable()
 export class ChannelsService {
@@ -19,6 +21,8 @@ export class ChannelsService {
     private readonly repository: ChannelsRepository,
     private readonly adapterRegistry: ChannelAdapterRegistry,
     private readonly zappfyHttpClient: ZappfyHttpClient,
+    private readonly waOfficialHttpClient: WhatsAppOfficialHttpClient,
+    private readonly instagramHttpClient: InstagramHttpClient,
   ) {}
 
   async create(organizationId: string, dto: CreateChannelDto) {
@@ -61,22 +65,51 @@ export class ChannelsService {
   async testConnection(id: string, organizationId: string) {
     const channel = await this.findOne(id, organizationId);
 
-    if (channel.type === ChannelType.WHATSAPP_ZAPPFY) {
-      try {
-        const status = await this.zappfyHttpClient.getInstanceStatus(channel);
-        return {
-          success: true,
-          status: status?.state || status?.status || 'connected',
-          data: status,
-        };
-      } catch (error: any) {
-        return {
-          success: false,
-          error: error.response?.data?.message || error.message,
-        };
-      }
-    }
+    try {
+      switch (channel.type) {
+        case ChannelType.WHATSAPP_ZAPPFY: {
+          const status = await this.zappfyHttpClient.getInstanceStatus(channel);
+          return {
+            success: true,
+            status: status?.state || status?.status || 'connected',
+            data: status,
+          };
+        }
 
-    return { success: false, error: 'Test not available for this channel type' };
+        case ChannelType.WHATSAPP_OFFICIAL: {
+          const info = await this.waOfficialHttpClient.verifyPhoneNumber(channel);
+          return {
+            success: true,
+            status: 'connected',
+            data: {
+              phoneNumber: info.display_phone_number,
+              qualityRating: info.quality_rating,
+              verifiedName: info.verified_name,
+            },
+          };
+        }
+
+        case ChannelType.INSTAGRAM: {
+          const info = await this.instagramHttpClient.getPageInfo(channel);
+          return {
+            success: true,
+            status: 'connected',
+            data: {
+              pageId: info.id,
+              pageName: info.name,
+              igAccountId: info.instagram_business_account?.id,
+            },
+          };
+        }
+
+        default:
+          return { success: false, error: 'Unsupported channel type' };
+      }
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.response?.data?.error?.message || error.message,
+      };
+    }
   }
 }

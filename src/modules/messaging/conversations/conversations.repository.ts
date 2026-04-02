@@ -4,7 +4,7 @@ import { PrismaService } from '../../../database/prisma.service';
 
 export interface InboxFilters {
   organizationId: string;
-  status?: ConversationStatus;
+  status?: ConversationStatus[];
   channelId?: string;
   assignedToId?: string;
   search?: string;
@@ -19,7 +19,11 @@ export class ConversationsRepository {
       organizationId: filters.organizationId,
     };
 
-    if (filters.status) where.status = filters.status;
+    if (filters.status?.length) {
+      where.status = filters.status.length === 1
+        ? filters.status[0]
+        : { in: filters.status };
+    }
     if (filters.channelId) where.channelId = filters.channelId;
     if (filters.assignedToId) where.assignedToId = filters.assignedToId;
     if (filters.search) {

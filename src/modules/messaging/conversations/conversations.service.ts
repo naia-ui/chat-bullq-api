@@ -22,9 +22,15 @@ export class ConversationsService {
     page: number,
     limit: number,
   ) {
+    const validStatuses = new Set(Object.values(ConversationStatus));
+    const parsedStatuses = filters.status
+      ?.split(',')
+      .map((s) => s.trim() as ConversationStatus)
+      .filter((s) => validStatuses.has(s));
+
     const inboxFilters: InboxFilters = {
       organizationId,
-      status: filters.status as ConversationStatus | undefined,
+      status: parsedStatuses?.length ? parsedStatuses : undefined,
       channelId: filters.channelId,
       assignedToId: filters.assignedToId,
       search: filters.search,
