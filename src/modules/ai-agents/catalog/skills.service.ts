@@ -16,6 +16,9 @@ export class SkillsCatalogService {
       orderBy: [{ category: 'asc' }, { name: 'asc' }],
       include: {
         tool: { select: { id: true, name: true, source: true } },
+        agents: {
+          select: { agent: { select: { id: true, name: true } } },
+        },
         _count: { select: { agents: true, versions: true } },
       },
     });
