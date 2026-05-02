@@ -1,6 +1,7 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { AiAgentKind } from '@prisma/client';
-import { AiTool, toLlmDefinition } from './tool.types';
+import { PrismaService } from '../../../database/prisma.service';
+import { AiTool as BuiltInToolImpl, toLlmDefinition } from './tool.types';
 import { LlmToolDefinition } from '../llm/llm.types';
 import { ReplyToConversationTool } from './builtin/reply-to-conversation.tool';
 import { TransferToHumanTool } from './builtin/transfer-to-human.tool';
@@ -16,12 +17,13 @@ import { HandBackToOrchestratorTool } from './builtin/hand-back-to-orchestrator.
  * available to both.
  */
 @Injectable()
-export class ToolRegistry {
+export class ToolRegistry implements OnModuleInit {
   private readonly logger = new Logger(ToolRegistry.name);
-  private readonly tools = new Map<string, AiTool>();
+  private readonly tools = new Map<string, BuiltInToolImpl>();
   private readonly scope = new Map<string, Set<AiAgentKind>>();
 
   constructor(
+    private readonly prisma: PrismaService,
     reply: ReplyToConversationTool,
     transfer: TransferToHumanTool,
     tag: TagConversationTool,
@@ -46,7 +48,50 @@ export class ToolRegistry {
     );
   }
 
-  private register(tool: AiTool, kinds: AiAgentKind[]): void {
+  /**
+   * On boot, mirror every built-in tool into the database so the UI can
+   * list/atribuir them just like custom HTTP tools. Idempotent — uses
+   * upsert keyed on (organizationId=null, name).
+   */
+  async onModuleInit() {
+    for (const [name, tool] of this.tools) {
+      try {
+        // Prisma's typed unique on a nullable column doesn't accept `null`,
+        // so we do a manual find+create/update for the BUILTIN row (org=null).
+        const existing = await this.prisma.aiTool.findFirst({
+          where: { name, organizationId: null, source: 'BUILTIN' },
+        });
+        if (existing) {
+          await this.prisma.aiTool.update({
+            where: { id: existing.id },
+            data: {
+              description: tool.description,
+              parameters: tool.parameters as object,
+              isActive: true,
+            },
+          });
+        } else {
+          await this.prisma.aiTool.create({
+            data: {
+              name,
+              description: tool.description,
+              source: 'BUILTIN',
+              parameters: tool.parameters as object,
+              organizationId: null,
+              isActive: true,
+            },
+          });
+        }
+      } catch (err: any) {
+        this.logger.warn(
+          `Failed to mirror built-in tool ${name}: ${err?.message ?? err}`,
+        );
+      }
+    }
+    this.logger.log(`Built-in tools mirrored to DB.`);
+  }
+
+  private register(tool: BuiltInToolImpl, kinds: AiAgentKind[]): void {
     if (this.tools.has(tool.name)) {
       throw new Error(`Duplicate tool registration: ${tool.name}`);
     }
@@ -54,7 +99,7 @@ export class ToolRegistry {
     this.scope.set(tool.name, new Set(kinds));
   }
 
-  get(name: string): AiTool {
+  get(name: string): BuiltInToolImpl {
     const tool = this.tools.get(name);
     if (!tool) {
       throw new NotFoundException(`Unknown tool: ${name}`);

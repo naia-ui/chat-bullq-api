@@ -9,9 +9,12 @@ import { ListAvailableAgentsTool } from './builtin/list-available-agents.tool';
 import { DelegateToAgentTool } from './builtin/delegate-to-agent.tool';
 import { HandBackToOrchestratorTool } from './builtin/hand-back-to-orchestrator.tool';
 import { ToolRegistry } from './tool-registry.service';
+import { HttpToolExecutorService } from './http-tool-executor.service';
+import { ConfigModule } from '@nestjs/config';
 
 @Module({
   imports: [
+    ConfigModule,
     PrismaModule,
     RealtimeModule,
     BullModule.registerQueue({ name: 'outbound-messages' }),
@@ -24,7 +27,8 @@ import { ToolRegistry } from './tool-registry.service';
     DelegateToAgentTool,
     HandBackToOrchestratorTool,
     ToolRegistry,
+    HttpToolExecutorService,
   ],
-  exports: [ToolRegistry],
+  exports: [ToolRegistry, HttpToolExecutorService],
 })
 export class ToolsModule {}

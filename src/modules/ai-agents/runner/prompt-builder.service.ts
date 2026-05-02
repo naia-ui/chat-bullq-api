@@ -20,6 +20,8 @@ export interface PromptContext {
   memorySummary: string | null;
   memoryFacts: Record<string, unknown> | null;
   triggerMessage: Message;
+  /** Extra prompt fragments contributed by the agent's active skills. */
+  skillInstructions?: string[];
 }
 
 const SYSTEM_TEMPLATE = `Você é <%= it.agent.name %>, atendente virtual da <%= it.organization.name %>.
@@ -51,7 +53,15 @@ const SYSTEM_TEMPLATE = `Você é <%= it.agent.name %>, atendente virtual da <%=
 - Use \`tagConversation\` pra categorizar o pedido (ex: "billing", "duvida-tecnica", "lead-quente").
 - Se o cliente já está satisfeito e a conversa pode fechar, responda e depois pode parar.
 - NUNCA invente informações. Se não souber, transfira ou pergunte.
-- Mensagens curtas. Uma ideia por mensagem.`;
+- Mensagens curtas. Uma ideia por mensagem.
+<% if (it.skillInstructions && it.skillInstructions.length > 0) { %>
+
+═══ Skills ativas ═══
+<% for (const inst of it.skillInstructions) { %>
+
+<%= inst %>
+<% } %>
+<% } %>`;
 
 @Injectable()
 export class PromptBuilderService {

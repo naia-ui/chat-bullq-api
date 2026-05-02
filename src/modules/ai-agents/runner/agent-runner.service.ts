@@ -4,12 +4,14 @@ import {
   AiRunStatus,
   Conversation,
   Message,
+  AiTool as AiToolRow,
 } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { LlmService } from '../llm/llm.service';
-import { LlmMessage, LlmToolCall } from '../llm/llm.types';
+import { LlmMessage, LlmToolCall, LlmToolDefinition } from '../llm/llm.types';
 import { ToolRegistry } from '../tools/tool-registry.service';
 import { ToolContext } from '../tools/tool.types';
+import { HttpToolExecutorService } from '../tools/http-tool-executor.service';
 import { PromptBuilderService } from './prompt-builder.service';
 
 const MAX_TOOL_ITERATIONS = 8;
@@ -37,6 +39,7 @@ export class AiAgentRunnerService {
     private readonly llm: LlmService,
     private readonly registry: ToolRegistry,
     private readonly promptBuilder: PromptBuilderService,
+    private readonly httpExecutor: HttpToolExecutorService,
   ) {}
 
   async run({
@@ -89,6 +92,15 @@ export class AiAgentRunnerService {
       },
     });
 
+    // Resolve every tool the agent can call:
+    //   1. built-in defaults filtered by kind (reply/transfer/tag/...);
+    //   2. tools attached via skills (each skill.tools[]);
+    //   3. tools attached directly to the agent (agent.extraTools).
+    // Custom HTTP tools live in the DB; we keep their rows here so the
+    // runner can hand them to HttpToolExecutor on tool-call time.
+    const { llmTools, customToolsByName, skillInstructions } =
+      await this.resolveToolsAndSkills(agent.id, agent.kind);
+
     const startedAt = Date.now();
     const messages = this.promptBuilder.buildMessages({
       organization,
@@ -101,9 +113,10 @@ export class AiAgentRunnerService {
       memorySummary: memory?.summary ?? null,
       memoryFacts: (memory?.facts as Record<string, unknown>) ?? null,
       triggerMessage,
+      skillInstructions,
     });
 
-    const tools = this.registry.getLlmDefinitionsForKind(agent.kind);
+    const tools = llmTools;
 
     const aggregateUsage = {
       inputTokens: 0,
@@ -195,6 +208,7 @@ export class AiAgentRunnerService {
             runId: run.id,
             triggerMessageId: triggerMessage.id,
           },
+          customToolsByName,
         );
 
         for (const result of toolResults) {
@@ -307,6 +321,7 @@ export class AiAgentRunnerService {
   private async executeToolCalls(
     calls: LlmToolCall[],
     ctx: ToolContext,
+    customToolsByName: Map<string, AiToolRow>,
   ): Promise<
     Array<{
       toolCallId: string;
@@ -329,13 +344,25 @@ export class AiAgentRunnerService {
       let finalAction: string | undefined;
 
       try {
-        if (!this.registry.has(call.name)) {
+        const customTool = customToolsByName.get(call.name);
+        if (customTool) {
+          // Custom HTTP tool — executor handles fetch + response mapping.
+          const result = await this.httpExecutor.execute(
+            customTool,
+            call.arguments,
+            ctx,
+          );
+          output = result.output;
+          finalAction = result.finalAction;
+        } else if (this.registry.has(call.name)) {
+          // Built-in.
+          const tool = this.registry.get(call.name);
+          const result = await tool.execute(call.arguments, ctx);
+          output = result.output;
+          finalAction = result.finalAction;
+        } else {
           throw new Error(`Unknown tool: ${call.name}`);
         }
-        const tool = this.registry.get(call.name);
-        const result = await tool.execute(call.arguments, ctx);
-        output = result.output;
-        finalAction = result.finalAction;
       } catch (err: any) {
         errorMessage = err?.message ?? String(err);
         output = { ok: false, error: errorMessage };
@@ -364,6 +391,109 @@ export class AiAgentRunnerService {
     }
 
     return results;
+  }
+
+  /**
+   * Computes the full tool catalog for an agent run:
+   *   - kind-scoped built-in defaults from the in-memory registry
+   *   - tools attached via skills (with their prompt instructions)
+   *   - tools attached directly to the agent (no skill)
+   *
+   * Returns:
+   *   llmTools           — tool defs to send to the LLM (deduped by name)
+   *   customToolsByName  — DB rows for HTTP tools, used by the executor
+   *   skillInstructions  — prompt fragments to append to system message
+   */
+  private async resolveToolsAndSkills(
+    agentId: string,
+    kind: 'ORCHESTRATOR' | 'WORKER',
+  ): Promise<{
+    llmTools: LlmToolDefinition[];
+    customToolsByName: Map<string, AiToolRow>;
+    skillInstructions: string[];
+  }> {
+    const [skillLinks, agentToolLinks] = await Promise.all([
+      this.prisma.aiAgentSkill.findMany({
+        where: { agentId },
+        include: {
+          skill: {
+            include: {
+              tools: { include: { tool: true } },
+            },
+          },
+        },
+      }),
+      this.prisma.aiAgentTool.findMany({
+        where: { agentId },
+        include: { tool: true },
+      }),
+    ]);
+
+    const skillInstructions: string[] = [];
+    const customToolsByName = new Map<string, AiToolRow>();
+    const builtInNames = new Set<string>();
+
+    const collect = (tool: AiToolRow) => {
+      if (!tool.isActive || tool.deletedAt) return;
+      if (tool.source === 'CUSTOM_HTTP') {
+        customToolsByName.set(tool.name, tool);
+      } else if (tool.source === 'BUILTIN') {
+        // Validate that the registry actually has it AND it's allowed for
+        // this agent kind. This way an admin can't expose handBackToOrchestrator
+        // to an orchestrator just by attaching it via UI.
+        if (
+          this.registry.has(tool.name) &&
+          this.registry.isAllowedForKind(tool.name, kind)
+        ) {
+          builtInNames.add(tool.name);
+        }
+      }
+    };
+
+    for (const link of skillLinks) {
+      const skill = link.skill;
+      if (!skill.isActive || skill.deletedAt) continue;
+      if (skill.promptInstructions) {
+        skillInstructions.push(skill.promptInstructions.trim());
+      }
+      for (const t of skill.tools) collect(t.tool);
+    }
+    for (const link of agentToolLinks) collect(link.tool);
+
+    // Always include the kind-scoped defaults (reply/transfer/tag/etc) so the
+    // agent has the bare minimum to act, even if the admin forgot to attach.
+    const defaultLlm = this.registry.getLlmDefinitionsForKind(kind);
+
+    // Build dedup'd LLM tool defs. Custom HTTP tool has priority on name
+    // collision (BUILTIN names like "replyToConversation" can't be shadowed
+    // because they're filtered earlier).
+    const seen = new Set<string>();
+    const llmTools: LlmToolDefinition[] = [];
+    for (const t of defaultLlm) {
+      if (!seen.has(t.name)) {
+        seen.add(t.name);
+        llmTools.push(t);
+      }
+    }
+    for (const name of builtInNames) {
+      if (!seen.has(name)) {
+        seen.add(name);
+        const llmDef = this.registry.getLlmDefinitions([name])[0];
+        if (llmDef) llmTools.push(llmDef);
+      }
+    }
+    for (const [name, t] of customToolsByName) {
+      if (!seen.has(name)) {
+        seen.add(name);
+        llmTools.push({
+          name,
+          description: t.description,
+          parameters: t.parameters as Record<string, unknown>,
+        });
+      }
+    }
+
+    return { llmTools, customToolsByName, skillInstructions };
   }
 
   /**

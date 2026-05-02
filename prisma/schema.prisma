@@ -144,6 +144,8 @@ model Organization {
   invitations   Invitation[]
   apiKeys       ApiKey[]
   aiAgents      AiAgent[]
+  aiTools       AiTool[]
+  aiSkills      AiSkill[]
 
   @@map("organizations")
 }
@@ -763,10 +765,140 @@ model AiAgent {
   handoffsFrom   AiAgentHandoff[]  @relation("HandoffFrom")
   handoffsTo     AiAgentHandoff[]  @relation("HandoffTo")
   activeOn       Conversation[]    @relation("ActiveAgent")
+  skills         AiAgentSkill[]
+  extraTools     AiAgentTool[]
 
   @@index([organizationId], name: "idx_ai_agent_org")
   @@index([organizationId, kind], name: "idx_ai_agent_org_kind")
   @@map("ai_agents")
+}
+
+// ─── Tools (built-in registry + custom HTTP) ─────────────────
+
+enum AiToolSource {
+  BUILTIN
+  CUSTOM_HTTP
+}
+
+model AiTool {
+  id             String       @id @default(cuid())
+  organizationId String?      @map("organization_id")  // null = global built-in
+  name           String       // unique per org (or globally if org=null)
+  description    String       @db.Text
+  source         AiToolSource
+
+  parameters     Json         // JSON Schema do input
+
+  // Apenas pra source=CUSTOM_HTTP. Templates Mustache simples
+  // ({{input.x}}, {{env.X}}, {{ctx.organizationId}}).
+  httpMethod     String?      @map("http_method")     // GET | POST | PUT | PATCH | DELETE
+  httpUrl        String?      @map("http_url")
+  httpHeaders    Json?        @map("http_headers")
+  httpBodyTemplate String?    @map("http_body_template") @db.Text
+  responseMap    Json?        @map("response_map")    // { ok: "$.success", message: "$.data.message" }
+  timeoutMs      Int          @default(15000) @map("timeout_ms")
+
+  isActive       Boolean      @default(true) @map("is_active")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+  deletedAt      DateTime?    @map("deleted_at")
+
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  skillTools     AiSkillTool[]
+  agentTools     AiAgentTool[]
+
+  @@unique([organizationId, name], name: "uq_tool_org_name")
+  @@index([organizationId], name: "idx_tool_org")
+  @@map("ai_tools")
+}
+
+// ─── Skills (bundles reutilizáveis) ───────────────────────────
+
+model AiSkill {
+  id             String       @id @default(cuid())
+  organizationId String       @map("organization_id")
+  name           String
+  description    String       @db.Text
+  category       String?
+
+  promptInstructions String?  @map("prompt_instructions") @db.Text
+
+  currentVersion Int          @default(1) @map("current_version")
+
+  isActive       Boolean      @default(true) @map("is_active")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+  deletedAt      DateTime?    @map("deleted_at")
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  tools          AiSkillTool[]
+  agents         AiAgentSkill[]
+  versions       AiSkillVersion[]
+
+  @@unique([organizationId, name], name: "uq_skill_org_name")
+  @@index([organizationId], name: "idx_skill_org")
+  @@map("ai_skills")
+}
+
+// Snapshot de cada versão da skill — histórico de edição.
+model AiSkillVersion {
+  id             String   @id @default(cuid())
+  skillId        String   @map("skill_id")
+  version        Int
+
+  name           String
+  description    String   @db.Text
+  category       String?
+  promptInstructions String? @map("prompt_instructions") @db.Text
+  toolIds        String[] @default([]) @map("tool_ids")  // snapshot dos toolIds
+
+  changedById    String?  @map("changed_by_id")  // userId
+  changeNote     String?  @map("change_note")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  skill          AiSkill  @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([skillId, version], name: "uq_skill_version")
+  @@index([skillId], name: "idx_skill_version_skill")
+  @@map("ai_skill_versions")
+}
+
+// N:N skill ↔ tool
+model AiSkillTool {
+  skillId String @map("skill_id")
+  toolId  String @map("tool_id")
+
+  skill   AiSkill @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  tool    AiTool  @relation(fields: [toolId], references: [id], onDelete: Cascade)
+
+  @@id([skillId, toolId])
+  @@map("ai_skill_tools")
+}
+
+// N:N agent ↔ skill
+model AiAgentSkill {
+  agentId String @map("agent_id")
+  skillId String @map("skill_id")
+
+  agent   AiAgent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  skill   AiSkill @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, skillId])
+  @@map("ai_agent_skills")
+}
+
+// N:N agent ↔ tool extras (tools soltas, sem skill)
+model AiAgentTool {
+  agentId String @map("agent_id")
+  toolId  String @map("tool_id")
+
+  agent   AiAgent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  tool    AiTool  @relation(fields: [toolId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, toolId])
+  @@map("ai_agent_tools")
 }
 
 model AiAgentChannel {
