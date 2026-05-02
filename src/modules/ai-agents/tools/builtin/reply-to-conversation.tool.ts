@@ -52,10 +52,28 @@ export class ReplyToConversationTool implements AiTool {
       return { output: { ok: false, error: 'text is empty' } };
     }
 
-    const agent = await this.prisma.aiAgent.findUnique({
-      where: { id: ctx.agentId },
-      select: { name: true },
-    });
+    const [agent, contactChannel] = await Promise.all([
+      this.prisma.aiAgent.findUnique({
+        where: { id: ctx.agentId },
+        select: { name: true },
+      }),
+      this.prisma.contactChannel.findFirst({
+        where: { contactId: ctx.contactId, channelId: ctx.channelId },
+        select: { externalId: true },
+      }),
+    ]);
+
+    if (!contactChannel?.externalId) {
+      this.logger.error(
+        `No contactChannel for contact ${ctx.contactId} on channel ${ctx.channelId} — cannot send`,
+      );
+      return {
+        output: {
+          ok: false,
+          error: 'Contact has no external id on this channel',
+        },
+      };
+    }
 
     const message = await this.prisma.message.create({
       data: {
@@ -84,13 +102,15 @@ export class ReplyToConversationTool implements AiTool {
     });
 
     await this.outboundQueue.add(
-      'send',
+      'send-outbound',
       {
         messageId: message.id,
-        conversationId: ctx.conversationId,
         channelId: ctx.channelId,
-        type: MessageContentType.TEXT,
-        content: { text },
+        contactExternalId: contactChannel.externalId,
+        message: {
+          type: MessageContentType.TEXT,
+          content: { text },
+        },
       },
       {
         attempts: 3,
