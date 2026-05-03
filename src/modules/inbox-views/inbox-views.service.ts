@@ -138,6 +138,7 @@ export class InboxViewsService {
         status,
         channelIds: filters.channelIds,
         conversationIds: filters.conversationIds,
+        kind: filters.kind,
         assignedToId,
         search: extraSearch,
       },

@@ -13,6 +13,9 @@ export interface InboxFilters {
    *  bulk-action "create inbox from selection". When set, only these
    *  conversations match (still intersected with the other filters). */
   conversationIds?: string[];
+  /** Filter by conversation kind: individual (1-on-1) vs group (WA group
+   *  / IG group thread). Undefined = both. */
+  kind?: 'INDIVIDUAL' | 'GROUP';
   assignedToId?: string;
   search?: string;
   accessibleChannelIds?: string[];
@@ -82,6 +85,8 @@ export class ConversationsRepository {
       }
       where.id = { in: filters.conversationIds };
     }
+    if (filters.kind === 'INDIVIDUAL') where.isGroup = false;
+    else if (filters.kind === 'GROUP') where.isGroup = true;
     if (filters.assignedToId) where.assignedToId = filters.assignedToId;
     if (filters.search) {
       where.OR = [

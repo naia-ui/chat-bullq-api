@@ -40,6 +40,12 @@ export class InboxViewFiltersDto {
   @IsIn(['inbound', 'outbound', 'any'])
   lastDirection?: string;
 
+  /** INDIVIDUAL = 1-on-1, GROUP = group chats. Undefined = both. */
+  @IsOptional()
+  @IsString()
+  @IsIn(['INDIVIDUAL', 'GROUP'])
+  kind?: 'INDIVIDUAL' | 'GROUP';
+
   /**
    * Static inbox: when set, the view shows ONLY these conversations.
    * Used by bulk-action "create inbox from selection" — operator picks N
