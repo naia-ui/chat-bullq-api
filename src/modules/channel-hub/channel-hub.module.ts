@@ -56,6 +56,7 @@ import { WebhookThrottleGuard } from './webhook-throttle.guard';
     ChannelSyncOrchestrator,
     WebhookEventsService,
     InstagramModule,
+    ZappfyModule,
   ],
 })
 export class ChannelHubModule implements OnModuleInit {
