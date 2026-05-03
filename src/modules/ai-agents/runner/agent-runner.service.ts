@@ -175,8 +175,18 @@ export class AiAgentRunnerService {
           // Auto-send that text as a reply so we don't drop work the model
           // already paid for. Skip if a final action already happened
           // (transferred / closed / delegated) or a reply was already sent.
-          const text = this.extractText(response.message.content);
-          if (text && finalAction === AiFinalAction.NO_ACTION) {
+          const rawText = this.extractText(response.message.content);
+          const text = sanitizeAssistantText(rawText);
+          if (rawText && rawText !== text) {
+            this.logger.warn(
+              `Run ${run.id}: stripped turn markers from fallback text (raw="${rawText.slice(0, 80)}" → clean="${text.slice(0, 80)}")`,
+            );
+          }
+          // Bail out if the model only emitted turn markers (e.g. "Human:")
+          // or a stub too short to be a real reply. Sending such text would
+          // look like the agent literally typing "Human: oi" to the user.
+          const tooShortForReal = text.length < 4;
+          if (text && !tooShortForReal && finalAction === AiFinalAction.NO_ACTION) {
             this.logger.log(
               `Run ${run.id}: model emitted text without replyToConversation, auto-sending as fallback`,
             );
@@ -202,6 +212,10 @@ export class AiAgentRunnerService {
                 `Run ${run.id}: fallback reply failed: ${err?.message ?? err}`,
               );
             }
+          } else if (rawText && (tooShortForReal || !text)) {
+            this.logger.warn(
+              `Run ${run.id}: skipping fallback — sanitized text was empty or too short ("${rawText.slice(0, 80)}")`,
+            );
           }
           break;
         }
@@ -597,6 +611,37 @@ export class AiAgentRunnerService {
 
 interface LlmMessageWithToolCalls extends LlmMessage {
   toolCalls?: LlmToolCall[];
+}
+
+/**
+ * Removes hallucinated turn markers from LLM text output. Models occasionally
+ * emit transcripts like "Human: oi" or "Assistant: ..." when the few-shot
+ * examples in the system prompt include similar formatting. Without this
+ * scrubbing, the fallback reply path sends those markers verbatim to the
+ * customer (real incident: agent replied literally "Human: oi" via WhatsApp).
+ *
+ * Strategy: strip a leading marker plus any further "Role: ..." lines that
+ * should never reach the user. Returns trimmed text, or empty if everything
+ * was a marker (which the caller treats as "don't send anything").
+ */
+function sanitizeAssistantText(input: string): string {
+  if (!input) return '';
+  let text = input.trim();
+  const markerLine =
+    /^\s*(human|user|assistant|ai|claude|model|lead|cliente|cliente:?|agent|você|voce|bot)\s*:\s*/i;
+
+  // Repeatedly strip leading turn markers, since hallucinations sometimes
+  // cascade ("Human: oi\nAssistant: ...").
+  while (markerLine.test(text)) {
+    text = text.replace(markerLine, '').trim();
+  }
+
+  // If the body still contains a "Role:" mid-text on its own line (e.g.
+  // model echoed "Lead: comprou X"), drop everything from that line down.
+  const splitIdx = text.search(/\n\s*(human|user|assistant|ai|claude|lead|cliente)\s*:\s*/i);
+  if (splitIdx >= 0) text = text.slice(0, splitIdx).trim();
+
+  return text;
 }
 
 /**
