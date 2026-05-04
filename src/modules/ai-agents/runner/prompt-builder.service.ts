@@ -40,6 +40,13 @@ const SYSTEM_TEMPLATE = `Você é <%= it.agent.name %>, atendente virtual da <%=
 ═══ Contexto do negócio (atualizado pela operação) ═══
 <%= it.organization.aiBusinessNotes %>
 <% } %>
+<% if (it.agent.operationalContext && String(it.agent.operationalContext).trim().length > 0) { %>
+
+═══ Contexto operacional do dia (LEIA ANTES DE RESPONDER) ═══
+Atualizado em <%= it.operationalContextLabel %>. Use isso pra orientar suas próximas respostas — assume que o cliente vê reflexo direto desse contexto na conversa.
+
+<%= it.agent.operationalContext %>
+<% } %>
 
 ═══ Contexto da conversa ═══
 - Canal: <%= it.channel.name %> (<%= it.channel.type %>)
@@ -370,6 +377,10 @@ export class PromptBuilderService {
     const systemText = this.eta.renderString(SYSTEM_TEMPLATE, {
       ...ctx,
       now: this.formatNow(ctx.organization.aiTimezone),
+      operationalContextLabel: this.formatRelativeUpdate(
+        (ctx.agent as any).operationalContextUpdatedAt,
+        ctx.organization.aiTimezone,
+      ),
     });
 
     const messages: LlmMessage[] = [
@@ -534,5 +545,39 @@ export class PromptBuilderService {
     } catch {
       return new Date().toISOString();
     }
+  }
+
+  /**
+   * Texto relativo pro selo "atualizado em X" do contexto operacional.
+   * Inclui a data absoluta + idade pra o LLM saber que tá usando info
+   * fresca ou stale ("hoje 14h" vs "atualizado há 4 dias — pode estar
+   * desatualizado, confirme com humano se algo crítico").
+   */
+  private formatRelativeUpdate(
+    updatedAt: Date | string | null | undefined,
+    timezone: string,
+  ): string {
+    if (!updatedAt) return 'data desconhecida';
+    const d = updatedAt instanceof Date ? updatedAt : new Date(updatedAt);
+    const ageMs = Date.now() - d.getTime();
+    const ageHours = Math.floor(ageMs / 3_600_000);
+    const ageDays = Math.floor(ageHours / 24);
+    const absolute = (() => {
+      try {
+        return new Intl.DateTimeFormat('pt-BR', {
+          timeZone: timezone,
+          dateStyle: 'short',
+          timeStyle: 'short',
+        }).format(d);
+      } catch {
+        return d.toISOString();
+      }
+    })();
+    let relative: string;
+    if (ageHours < 1) relative = 'há menos de 1h';
+    else if (ageHours < 24) relative = `há ${ageHours}h`;
+    else if (ageDays < 30) relative = `há ${ageDays} ${ageDays === 1 ? 'dia' : 'dias'}`;
+    else relative = `há ${Math.floor(ageDays / 30)} meses`;
+    return `${absolute} (${relative})`;
   }
 }

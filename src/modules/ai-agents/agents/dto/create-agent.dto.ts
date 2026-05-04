@@ -117,4 +117,13 @@ export class CreateAgentDto {
   @IsString()
   @MaxLength(60)
   squad?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Contexto operacional vivo — atualizado quase diariamente pelo operador. Ex: "Hoje teve aula sobre Skills. Ofereça Dominando Claude Code R$ 1.497 (link X) pra quem responder feedback positivo." Injetado no system prompt em todo run.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(8000)
+  operationalContext?: string;
 }

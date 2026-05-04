@@ -794,6 +794,14 @@ model AiAgent {
   modelId      String @map("model_id")
   modelParams  Json?  @map("model_params")
   systemPrompt String @map("system_prompt")
+  // Contexto vivo da operação — atualizado quase diariamente pelo
+  // operador. Ex: "Hoje teve aula sobre Skills. Ofereça Dominando
+  // Claude Code R$ 1.497 (link X) pra quem responder feedback positivo."
+  // Injetado no system prompt em todo run, marcado como cache_control
+  // ephemeral pra não inflar token cost — quando o JP edita, o cache
+  // é invalidado naturalmente pela mudança de hash.
+  operationalContext String?   @map("operational_context")
+  operationalContextUpdatedAt DateTime? @map("operational_context_updated_at")
   temperature  Float  @default(0.7)
   maxTokens    Int    @default(2048) @map("max_tokens")
 

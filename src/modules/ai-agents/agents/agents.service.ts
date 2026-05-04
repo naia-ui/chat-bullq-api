@@ -36,6 +36,8 @@ export class AgentsService {
         parentAgentId: dto.parentAgentId ?? null,
         department: dto.department ?? null,
         squad: dto.squad ?? null,
+        operationalContext: dto.operationalContext ?? null,
+        operationalContextUpdatedAt: dto.operationalContext ? new Date() : null,
       },
     });
 
@@ -92,7 +94,7 @@ export class AgentsService {
   }
 
   async update(organizationId: string, id: string, dto: UpdateAgentDto) {
-    await this.findOne(organizationId, id);
+    const existing = await this.findOne(organizationId, id);
 
     // Validate org-tree integrity when changing parent.
     // Two failure modes: (a) self-reference, (b) cycle via descendant.
@@ -115,11 +117,22 @@ export class AgentsService {
       }
     }
 
+    // Touch operationalContextUpdatedAt apenas quando o conteúdo mudou de
+    // verdade. Se o cliente reenvia o mesmo texto (ex: salvou outros
+    // campos), não bombardeia o "atualizado em" — operador vai confiar
+    // nesse timestamp pra saber se a memória ainda tá viva.
+    const operationalContextChanged =
+      dto.operationalContext !== undefined &&
+      dto.operationalContext !== (existing as any).operationalContext;
+
     return this.prisma.aiAgent.update({
       where: { id },
       data: {
         ...dto,
         modelParams: dto.modelParams as object | undefined,
+        ...(operationalContextChanged
+          ? { operationalContextUpdatedAt: new Date() }
+          : {}),
       },
     });
   }
