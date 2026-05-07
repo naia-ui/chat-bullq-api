@@ -485,6 +485,35 @@ export class PipelinesService {
     });
   }
 
+  /**
+   * Lista todos os cards (pipelines) em que uma conversa está. Usado pela
+   * UI da inbox pra mostrar/editar/remover a conversa de pipelines direto
+   * do header da conversa (sem precisar abrir o kanban).
+   */
+  async listCardsByConversation(
+    conversationId: string,
+    organizationId: string,
+  ) {
+    return this.prisma.card.findMany({
+      where: { conversationId, organizationId },
+      orderBy: { createdAt: 'asc' },
+      include: {
+        pipeline: {
+          select: {
+            id: true,
+            name: true,
+            color: true,
+            icon: true,
+            archived: true,
+          },
+        },
+        stage: {
+          select: { id: true, name: true, color: true, type: true, order: true },
+        },
+      },
+    });
+  }
+
   // ─── helpers ───────────────────────────────────
 
   private async assertPipeline(id: string, organizationId: string) {

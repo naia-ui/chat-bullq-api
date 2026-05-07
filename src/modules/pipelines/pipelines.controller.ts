@@ -80,6 +80,18 @@ export class PipelinesController {
 
   // ─── Cards ────────────────────────────────────
 
+  @Get('cards/by-conversation/:conversationId')
+  @ApiOperation({
+    summary:
+      'List all cards (across pipelines) linked to a conversation. Used by the inbox header to show/edit/remove pipeline membership inline.',
+  })
+  cardsByConversation(
+    @Param('conversationId') conversationId: string,
+    @CurrentOrg('id') orgId: string,
+  ) {
+    return this.service.listCardsByConversation(conversationId, orgId);
+  }
+
   @Post(':id/cards')
   @ApiOperation({ summary: 'Create a card in this pipeline' })
   createCard(
