@@ -158,6 +158,15 @@ export class AiAgentRunnerService {
     let iterationCount = 0;
     const toolsCalled = new Set<string>();
     let salesNudgeUsed = false;
+    // Hard cap of 1 successful replyToConversation per run. The system
+    // prompt encourages "uma ideia por mensagem" + multi-step consultative
+    // selling, but the runner used to fire every reply back-to-back in
+    // the same turn — customers saw 2 bubbles with redundant CTAs ("quer
+    // o link?" repeated). We now let the LLM emit one reply, then any
+    // subsequent replyToConversation gets a soft error so the model
+    // tags / hands off / ends. Other tools (tag, handBack, transfer)
+    // still run normally.
+    let replyAlreadySuccessful = false;
 
     try {
       // Mark this agent as the active one on the conversation.
@@ -280,6 +289,7 @@ export class AiAgentRunnerService {
             triggerMessageId: triggerMessage.id,
           },
           customSkillsByName,
+          replyAlreadySuccessful,
         );
 
         for (const result of toolResults) {
@@ -292,6 +302,12 @@ export class AiAgentRunnerService {
           });
           if (result.finalAction && finalAction === AiFinalAction.NO_ACTION) {
             finalAction = result.finalAction as AiFinalAction;
+          }
+          if (
+            result.toolName === 'replyToConversation' &&
+            (result.output as any)?.ok === true
+          ) {
+            replyAlreadySuccessful = true;
           }
         }
 
@@ -410,6 +426,7 @@ export class AiAgentRunnerService {
     calls: LlmToolCall[],
     ctx: ToolContext,
     customSkillsByName: Map<string, AiSkill & { tool: AiTool | null }>,
+    alreadyRepliedFromPriorIteration: boolean,
   ): Promise<
     Array<{
       toolCallId: string;
@@ -424,12 +441,52 @@ export class AiAgentRunnerService {
       output: unknown;
       finalAction?: string;
     }> = [];
+    // Tracks whether THIS batch already produced a successful reply.
+    // Combined with the cross-iteration flag, it lets us block the very
+    // first dup even when the model emits two replyToConversation calls
+    // in a single tool_use response.
+    let repliedInThisBatch = false;
 
     for (const call of calls) {
       const startedAt = Date.now();
       let output: unknown;
       let errorMessage: string | undefined;
       let finalAction: string | undefined;
+
+      // Guard: only one successful replyToConversation per run. The LLM
+      // sometimes "thinks aloud" by emitting 2 replies in sequence —
+      // customer ends up with duplicate CTAs ("posso te mandar o link?"
+      // twice). We let the model see a soft error and gracefully end
+      // the turn (it usually pivots to tagConversation or stops).
+      if (
+        call.name === 'replyToConversation' &&
+        (alreadyRepliedFromPriorIteration || repliedInThisBatch)
+      ) {
+        this.logger.warn(
+          `Run ${ctx.runId}: blocked duplicate replyToConversation — agent already replied this turn`,
+        );
+        const blockedOutput = {
+          ok: false,
+          error:
+            'Already replied this turn. Do NOT call replyToConversation again — wait for the customer to react. End the turn now (you may still tag/handBack/transfer if needed).',
+        };
+        results.push({
+          toolCallId: call.id,
+          toolName: call.name,
+          output: blockedOutput,
+        });
+        await this.prisma.aiToolCall.create({
+          data: {
+            runId: ctx.runId,
+            toolName: call.name,
+            input: call.arguments as object,
+            output: blockedOutput as object,
+            error: 'duplicate-reply-blocked',
+            durationMs: 0,
+          },
+        });
+        continue;
+      }
 
       // Run + auto-retry on transient failures only. We retry once with a
       // short backoff when the error looks transient (network, timeout,
@@ -523,6 +580,13 @@ export class AiAgentRunnerService {
         output,
         finalAction,
       });
+
+      if (
+        call.name === 'replyToConversation' &&
+        (output as any)?.ok === true
+      ) {
+        repliedInThisBatch = true;
+      }
     }
 
     return results;

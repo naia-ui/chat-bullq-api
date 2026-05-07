@@ -47,11 +47,13 @@ interface StatusJobData {
  *    two replies fighting for attention. The longer wait gives them room.
  *
  * Each new inbound message on the same conversation resets the timer —
- * we only run the agent once per "burst". 8s covers the typical chat
- * cadence where someone types one thought, hits send, and continues
- * (an earlier 3s window let those bursts slip through and double-answer).
+ * we only run the agent once per "burst". 10s covers slower typists who
+ * pause mid-thought (3s and 8s both let those bursts slip through and
+ * generate two answers fighting each other). Combined with the 1-reply-
+ * per-run guard in agent-runner, this is defense in depth: debounce
+ * collapses the burst, the runner guarantees a single outbound bubble.
  */
-const AGENT_DEBOUNCE_MS = 8000;
+const AGENT_DEBOUNCE_MS = 10_000;
 
 /**
  * Message types that should NEVER trigger an agent run. REACTION (the
