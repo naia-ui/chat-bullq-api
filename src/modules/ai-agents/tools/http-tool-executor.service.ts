@@ -2,17 +2,43 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { AiSkill, AiTool } from '@prisma/client';
 import { ToolContext, ToolResult } from './tool.types';
+import { PendingActionService } from '../confirmations/pending-action.service';
+import type {
+  ActionPreview,
+  ImpactLevel,
+} from '../confirmations/confirmation.types';
+
+/**
+ * Skills HTTP que NÃO podem rodar direto — viram PendingAction e só
+ * executam após aprovação humana. Mapeia nome da skill → impacto.
+ *
+ * Match é case-sensitive e bate com o `name` que o LLM vê (mesmo nome
+ * persistido em ai_skills).
+ */
+const DESTRUCTIVE_HTTP_SKILLS: Record<string, ImpactLevel> = {
+  grantAccess: 'high',
+  resetPassword: 'high',
+  sendLoginLink: 'medium',
+};
 
 /**
  * Executes HTTP-backed Skills. The connection (base url + auth headers)
  * comes from the AiTool the skill is bound to; the per-call invocation
  * (path, method, body, response mapping) comes from the AiSkill itself.
+ *
+ * Destructive skills (ver `DESTRUCTIVE_HTTP_SKILLS`) NÃO são chamadas
+ * diretamente: criamos um `PendingAction` e devolvemos pro LLM um output
+ * com `requiresUserAction=true`. Quando o operador aprovar, o executor
+ * da fase 2 dispara a chamada real.
  */
 @Injectable()
 export class HttpToolExecutorService {
   private readonly logger = new Logger(HttpToolExecutorService.name);
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly pendingActions: PendingActionService,
+  ) {}
 
   async execute(
     skill: AiSkill,
@@ -35,6 +61,13 @@ export class HttpToolExecutorService {
           error: 'Skill not fully configured (httpBaseUrl/httpMethod/httpPath missing)',
         },
       };
+    }
+
+    // Skills destrutivas exigem aprovação humana — short-circuit antes
+    // de bater na rota real.
+    const impact = DESTRUCTIVE_HTTP_SKILLS[skill.name];
+    if (impact) {
+      return this.gateAsPendingAction(skill, input, ctx, impact);
     }
 
     const url =
@@ -113,6 +146,98 @@ export class HttpToolExecutorService {
   }
 
   // ─── helpers ───────────────────────────────────────────────────
+
+  /**
+   * Cria um PendingAction pra skill destrutiva e devolve um ToolResult que
+   * sinaliza pro LLM "tá em revisão humana, não execute follow-up".
+   */
+  private async gateAsPendingAction(
+    skill: AiSkill,
+    input: Record<string, unknown>,
+    ctx: ToolContext,
+    impact: ImpactLevel,
+  ): Promise<ToolResult> {
+    const preview: ActionPreview = {
+      action: this.buildPreviewAction(skill.name, input),
+      impact,
+      rollback: this.buildRollback(skill.name),
+      affectedEntity: {
+        type: 'contact',
+        id: ctx.contactId,
+        label: this.guessContactLabel(input) ?? `contact:${ctx.contactId}`,
+      },
+    };
+
+    const action = await this.pendingActions.create({
+      agentRunId: ctx.runId,
+      conversationId: ctx.conversationId,
+      agentId: ctx.agentId,
+      toolName: skill.name,
+      args: input,
+      preview,
+    });
+
+    this.logger.log(
+      `[skill:${skill.name}] gated as pendingAction=${action.id} (impact=${impact})`,
+    );
+
+    return {
+      output: {
+        ok: true,
+        pendingActionId: action.id,
+        requiresUserAction: true,
+        preview,
+        message: 'Aguardando aprovação humana antes de executar.',
+      },
+    };
+  }
+
+  private buildPreviewAction(
+    skillName: string,
+    input: Record<string, unknown>,
+  ): string {
+    const email = this.guessContactLabel(input);
+    const offer =
+      typeof input.offerSlug === 'string'
+        ? input.offerSlug
+        : typeof input.offer === 'string'
+          ? input.offer
+          : undefined;
+
+    switch (skillName) {
+      case 'grantAccess':
+        return offer
+          ? `Liberar acesso de ${email ?? 'cliente'} ao(à) "${offer}"`
+          : `Liberar acesso de ${email ?? 'cliente'} na área de membros`;
+      case 'resetPassword':
+        return `Resetar senha de ${email ?? 'cliente'} na área de membros`;
+      case 'sendLoginLink':
+        return `Enviar link mágico de login pra ${email ?? 'cliente'}`;
+      default:
+        return `Executar ${skillName}`;
+    }
+  }
+
+  private buildRollback(skillName: string): string | undefined {
+    switch (skillName) {
+      case 'grantAccess':
+        return 'Revogar acesso via revokeAccess (ou painel admin do Trivapp).';
+      case 'resetPassword':
+        return 'Não há rollback automático — orientar o cliente a definir nova senha.';
+      case 'sendLoginLink':
+        return 'Link expira sozinho; sem rollback necessário.';
+      default:
+        return undefined;
+    }
+  }
+
+  private guessContactLabel(
+    input: Record<string, unknown>,
+  ): string | undefined {
+    const email = input.email;
+    if (typeof email === 'string' && email.trim()) return email.trim();
+    return undefined;
+  }
 
   private renderHeaders(
     raw: unknown,

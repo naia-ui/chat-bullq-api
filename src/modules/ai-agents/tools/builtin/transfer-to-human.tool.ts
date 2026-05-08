@@ -1,13 +1,18 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConversationStatus } from '@prisma/client';
-import { PrismaService } from '../../../../database/prisma.service';
 import { RealtimeGateway } from '../../../realtime/realtime.gateway';
+import { PendingActionService } from '../../confirmations/pending-action.service';
 import { AiTool, ToolContext, ToolResult } from '../tool.types';
 
 /**
  * Hands the conversation off to a human. Pauses AI on this conversation
  * (so the agent stops responding), moves status to PENDING (so it shows
  * up in the queue), and clears the active agent.
+ *
+ * Fase 2: a operação real ficou atrás de aprovação humana. A tool agora
+ * cria um `PendingAction` (impact=critical) e devolve `requiresUserAction`
+ * pro LLM. Quando aprovada, o executor da fase 2 faz o pause/handoff de
+ * verdade. Mantemos a notificação imediata pro operador (via realtime)
+ * pra ele revisar a fila de pendências sem demora.
  */
 @Injectable()
 export class TransferToHumanTool implements AiTool {
@@ -38,8 +43,8 @@ export class TransferToHumanTool implements AiTool {
   };
 
   constructor(
-    private readonly prisma: PrismaService,
     private readonly realtime: RealtimeGateway,
+    private readonly pendingActions: PendingActionService,
   ) {}
 
   async execute(
@@ -49,39 +54,57 @@ export class TransferToHumanTool implements AiTool {
     const reason = String(input.reason ?? '').trim() || 'Handoff sem motivo informado';
     const summary = input.summary ? String(input.summary).trim() : null;
 
-    await this.prisma.$transaction([
-      this.prisma.conversation.update({
-        where: { id: ctx.conversationId },
-        data: {
-          aiEnabled: false,
-          aiDisabledBy: `agent:${ctx.agentId}`,
-          aiDisabledAt: new Date(),
-          activeAgentId: null,
-          status: ConversationStatus.PENDING,
-          assignedToId: null,
-        },
-      }),
-      this.prisma.conversationAuditLog.create({
-        data: {
-          conversationId: ctx.conversationId,
-          actorId: null,
-          action: 'AI_HANDOFF_TO_HUMAN',
-          metadata: { agentId: ctx.agentId, reason, summary, runId: ctx.runId },
-        },
-      }),
-    ]);
+    const preview = {
+      action: `Transferir conversa pro atendimento humano: ${reason}`,
+      impact: 'critical' as const,
+      rollback:
+        'Reativar IA na conversa (aiEnabled=true) e devolver pra fila do bot.',
+      affectedEntity: {
+        type: 'conversation' as const,
+        id: ctx.conversationId,
+        label: `conversation:${ctx.conversationId}`,
+      },
+    };
 
-    this.realtime.emitToConversation(ctx.conversationId, 'conversation:ai-paused', {
+    const action = await this.pendingActions.create({
+      agentRunId: ctx.runId,
       conversationId: ctx.conversationId,
-      reason,
+      agentId: ctx.agentId,
+      toolName: this.name,
+      args: { reason, summary },
+      preview,
     });
 
+    // Notifica o operador imediatamente — ele revisa a fila de pendências
+    // e aprova/rejeita. A pausa da IA acontece SOMENTE após aprovação,
+    // pelo executor da fase 2.
+    this.realtime.emitToConversation(
+      ctx.conversationId,
+      'conversation:pending-action',
+      {
+        conversationId: ctx.conversationId,
+        pendingActionId: action.id,
+        toolName: this.name,
+        impact: preview.impact,
+        reason,
+      },
+    );
+
     this.logger.log(
-      `Agent ${ctx.agentId} handed conv ${ctx.conversationId} to human: ${reason}`,
+      `Agent ${ctx.agentId} requested handoff for conv ${ctx.conversationId} → pendingAction=${action.id} (reason="${reason}")`,
     );
 
     return {
-      output: { ok: true, message: 'Conversation handed off to human queue' },
+      output: {
+        ok: true,
+        pendingActionId: action.id,
+        requiresUserAction: true,
+        preview,
+        message: 'Aguardando aprovação humana antes de executar.',
+      },
+      // Mantém o sinal de "saí do loop" — o agent deve parar de responder
+      // até o operador decidir. Sem isso o LLM seguiria conversando como
+      // se tivesse transferido de fato.
       finalAction: 'TRANSFERRED_TO_HUMAN',
     };
   }
