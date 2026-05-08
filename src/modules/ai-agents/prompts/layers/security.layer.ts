@@ -17,7 +17,8 @@ const DEFAULT_RULES: SecurityRules = {
   noDeadlineCommitment: true,
   noResultPromise: true,
   noCrossClientDataLeak: true,
-  forbiddenEmojis: ['👋', '✅', '🎉'],
+  // Lista expandida do PROMPTS-AUDIT.md — qualquer um destes denuncia IA.
+  forbiddenEmojis: ['👋', '✅', '🎉', '🙏', '🤝', '✨', '📊', '📈'],
   language: 'pt-BR',
 };
 
@@ -107,6 +108,18 @@ export class SecurityLayerService {
         lines.push(`- ${rule}`);
       }
     }
+
+    // Regras universais de tom/identidade (extraídas do PROMPTS-AUDIT.md
+    // pra deduplicar dos systemPrompts dos 5 agents).
+    lines.push('');
+    lines.push('=== TOM E IDENTIDADE (universal) ===');
+    lines.push('- WhatsApp = mensagens curtas. 1 a 3 linhas por mensagem. Uma ideia por mensagem.');
+    lines.push('- Faça UMA pergunta por vez. Espere o cliente responder antes de mandar a próxima.');
+    lines.push('- NUNCA diga que é IA, robô, automação ou assistente virtual — exceto se o cliente perguntar diretamente.');
+    lines.push('- NUNCA use CAPS LOCK pra ênfase.');
+    lines.push('- Proibido: travessão "—", bullets em mensagem ao cliente, parágrafos longos, reticências "…".');
+    lines.push('- Tom: natural, direto, humano. Gírias leves OK ("blz", "show", "tranquilo"). Pomposidade NÃO.');
+    lines.push('- HANDOFF INVISÍVEL: workers NUNCA citam o orchestrator ("o Augusto me passou"), NUNCA se reapresentam ("aqui é a Lívia"), NUNCA cumprimentam de novo. Continuam a conversa como se sempre tivessem estado nela.');
 
     lines.push('');
     lines.push(

@@ -25,6 +25,12 @@ import {
   AgentRouterService,
   type AgentSelection,
 } from '../router/agent-router.service';
+import {
+  SecurityLayerService,
+  resolveSecurityRules,
+} from '../prompts/layers/security.layer';
+import type { SecurityRules } from '../prompts/types';
+import { RetrievalService } from '../rag/retrieval.service';
 
 const MAX_TOOL_ITERATIONS = 8;
 const MAX_RECENT_MESSAGES = 30;
@@ -70,6 +76,8 @@ export class AiAgentRunnerService {
     private readonly catalogSync: CatalogSyncService,
     private readonly notifications: NotificationsService,
     private readonly agentRouter: AgentRouterService,
+    private readonly securityLayer: SecurityLayerService,
+    private readonly retrieval: RetrievalService,
     @InjectQueue('memory-extractor')
     private readonly memoryExtractorQueue: Queue,
     @InjectQueue('rag-indexer')
@@ -174,6 +182,19 @@ export class AiAgentRunnerService {
       skillInstructions,
       catalog,
     });
+
+    // Fase 2.5: augmenta o system message com Security Layer (prepend)
+    // e RAG retrieval (append). Mantém o builder como source-of-truth da
+    // estrutura principal do prompt — só decora com regras imutáveis e
+    // contexto vetorial relevante do histórico longo do cliente.
+    await this.augmentSystemPromptWithLayers(
+      messages,
+      organization,
+      agent.id,
+      conversation.contactId,
+      conversation.id,
+      this.extractText(triggerMessage.content as unknown),
+    );
 
     const tools = llmTools;
 
@@ -767,6 +788,78 @@ export class AiAgentRunnerService {
    * Extract plain text from an LlmMessage content. Handles both string
    * content and content blocks (the cache_control format).
    */
+  /**
+   * Fase 2.5: augmenta o system message do prompt com:
+   *   - Layer 1 SECURITY (prepend, cacheable): regras imutáveis da org
+   *   - RAG retrieval (append, NÃO cacheable): top-K trechos relevantes do
+   *     histórico longo do cliente, recuperados via similarity search
+   *
+   * Side-effect: muta `messages[0].content` in-place. Falhas no RAG são
+   * silenciosas — agente continua respondendo só com contexto recente.
+   */
+  private async augmentSystemPromptWithLayers(
+    messages: LlmMessage[],
+    organization: { aiSecurityRules: unknown },
+    agentId: string,
+    contactId: string,
+    conversationId: string,
+    triggerText: string,
+  ): Promise<void> {
+    const firstMsg = messages[0];
+    if (!firstMsg || firstMsg.role !== 'system' || !Array.isArray(firstMsg.content)) {
+      return;
+    }
+
+    // 1) Security Layer (cacheable — estável por org)
+    const rules: SecurityRules = resolveSecurityRules(
+      (organization.aiSecurityRules as Partial<SecurityRules> | null) ?? undefined,
+    );
+    const securityPart = {
+      type: 'text' as const,
+      text: this.securityLayer.build(rules).content,
+      cache: true,
+    };
+
+    // 2) RAG retrieval (não cacheable — varia por turno)
+    let ragPart: { type: 'text'; text: string; cache: false } | null = null;
+    if (triggerText && triggerText.length >= 10) {
+      try {
+        const results = await this.retrieval.retrieve({
+          query: triggerText,
+          scope: {
+            agentId,
+            contactId,
+            conversationId,
+            ownerType: 'any',
+          },
+          k: 5,
+          minScore: 0.7,
+        });
+        if (results.length > 0) {
+          const lines = results
+            .map(
+              (r, i) =>
+                `${i + 1}. [${r.entry.ownerType}, score=${r.score.toFixed(2)}] ${r.entry.content.slice(0, 240)}`,
+            )
+            .join('\n');
+          ragPart = {
+            type: 'text',
+            text: `═══ Trechos relevantes do histórico (RAG) ═══\n${lines}\n\nUse esses trechos como memória de longo prazo. NÃO os cite literalmente — apenas demonstre que lembra do contexto.`,
+            cache: false,
+          };
+        }
+      } catch (err: any) {
+        this.logger.warn(`RAG retrieval failed: ${err?.message ?? err}`);
+      }
+    }
+
+    firstMsg.content = [
+      securityPart,
+      ...firstMsg.content,
+      ...(ragPart ? [ragPart] : []),
+    ];
+  }
+
   /**
    * Fase 2: enfileira jobs assíncronos pós-run.
    *  - memory-extractor: Haiku extrai facts/summary atualizado e grava em AiAgentMemory

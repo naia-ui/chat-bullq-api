@@ -5,6 +5,8 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import type { Queue } from 'bullmq';
 
 import type {
   CreatePendingActionInput,
@@ -12,6 +14,7 @@ import type {
   PendingActionStatus,
 } from './confirmation.types';
 import { PendingActionStorage } from './pending-action.storage';
+import { PENDING_ACTION_EXECUTOR_QUEUE } from './pending-action-executor.processor';
 
 /**
  * Service that owns the lifecycle of `PendingAction` records.
@@ -25,7 +28,11 @@ export class PendingActionService {
   private readonly logger = new Logger(PendingActionService.name);
   private readonly DEFAULT_TTL_MIN = 30;
 
-  constructor(private readonly storage: PendingActionStorage) {}
+  constructor(
+    private readonly storage: PendingActionStorage,
+    @InjectQueue(PENDING_ACTION_EXECUTOR_QUEUE)
+    private readonly executorQueue: Queue,
+  ) {}
 
   /** Create a new PENDING action for human review. */
   async create(input: CreatePendingActionInput): Promise<PendingAction> {
@@ -97,7 +104,21 @@ export class PendingActionService {
       toolName: action.toolName,
     });
 
-    // TODO Fase 2: enfileirar execução real da tool aqui.
+    // Fase 2.5: enfileira execução real da tool. O processor
+    // (PendingActionExecutorProcessor) resolve built-in vs HTTP skill,
+    // executa com bypassPendingGate, salva executionResult e marca EXECUTED.
+    try {
+      await this.executorQueue.add(
+        'execute_pending',
+        { pendingActionId: id },
+        { removeOnComplete: 100, removeOnFail: 50 },
+      );
+    } catch (err: any) {
+      this.logger.error(
+        `Failed to enqueue executor for pending action ${id}: ${err?.message ?? err}`,
+      );
+      // Não rethrow — aprovação foi salva. Operador pode re-disparar via UI.
+    }
 
     return action;
   }

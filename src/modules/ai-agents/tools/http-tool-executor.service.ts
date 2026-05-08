@@ -45,6 +45,7 @@ export class HttpToolExecutorService {
     tool: AiTool,
     input: Record<string, unknown>,
     ctx: ToolContext,
+    options: { bypassPendingGate?: boolean } = {},
   ): Promise<ToolResult> {
     if (skill.source !== 'HTTP') {
       throw new Error(`Skill ${skill.name} is not an HTTP skill`);
@@ -64,9 +65,11 @@ export class HttpToolExecutorService {
     }
 
     // Skills destrutivas exigem aprovação humana — short-circuit antes
-    // de bater na rota real.
+    // de bater na rota real. `bypassPendingGate` é usado pelo executor
+    // pós-aprovação (Fase 2.5) pra rodar a skill DEPOIS que o operador
+    // aprovou — caso contrário entraríamos em loop de PendingActions.
     const impact = DESTRUCTIVE_HTTP_SKILLS[skill.name];
-    if (impact) {
+    if (impact && !options.bypassPendingGate) {
       return this.gateAsPendingAction(skill, input, ctx, impact);
     }
 
