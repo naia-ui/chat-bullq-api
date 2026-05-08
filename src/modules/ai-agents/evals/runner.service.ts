@@ -445,7 +445,12 @@ function extractFinalMessage(
   // Fallback: raw assistant content (model didn't call any reply tool).
   const content = message.content;
   if (typeof content === 'string') return content;
-  if (Array.isArray(content)) return content.map((p) => p.text ?? '').join('');
+  if (Array.isArray(content)) {
+    return content
+      .filter((p) => p.type === 'text')
+      .map((p) => p.text ?? '')
+      .join('');
+  }
   return '';
 }
 

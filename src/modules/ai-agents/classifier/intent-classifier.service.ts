@@ -79,7 +79,10 @@ export class IntentClassifierService {
       const raw =
         typeof resp.message.content === 'string'
           ? resp.message.content
-          : resp.message.content.map((p) => p.text).join('');
+          : resp.message.content
+              .filter((p) => p.type === 'text')
+              .map((p) => p.text)
+              .join('');
 
       const parsed = this.parseClassifierJson(raw);
       const intent = this.normalizeIntent(parsed?.intent);

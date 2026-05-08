@@ -51,7 +51,10 @@ export class MemoryExtractorService {
     const content =
       typeof response.message.content === 'string'
         ? response.message.content
-        : response.message.content.map((p) => p.text).join('');
+        : response.message.content
+            .filter((p) => p.type === 'text')
+            .map((p) => p.text)
+            .join('');
 
     const parsed = this.tolerantParse(content);
     if (!parsed) {

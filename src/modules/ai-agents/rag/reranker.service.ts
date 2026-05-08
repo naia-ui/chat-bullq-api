@@ -60,7 +60,10 @@ export class RerankerService {
       const text =
         typeof response.message.content === 'string'
           ? response.message.content
-          : response.message.content.map((p) => p.text).join('');
+          : response.message.content
+              .filter((p) => p.type === 'text')
+              .map((p) => p.text)
+              .join('');
 
       const order = this.parseOrder(text, candidates.length);
       if (!order) {

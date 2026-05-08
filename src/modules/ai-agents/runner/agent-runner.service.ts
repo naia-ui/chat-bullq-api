@@ -33,6 +33,7 @@ import type { SecurityRules } from '../prompts/types';
 import { RetrievalService } from '../rag/retrieval.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
 import { sanitizeAssistantText } from './text-guards';
+import { MediaUrlResolverService } from './media-url-resolver.service';
 
 const MAX_TOOL_ITERATIONS = 8;
 const MAX_RECENT_MESSAGES = 30;
@@ -81,6 +82,7 @@ export class AiAgentRunnerService {
     private readonly securityLayer: SecurityLayerService,
     private readonly retrieval: RetrievalService,
     private readonly realtime: RealtimeGateway,
+    private readonly mediaUrlResolver: MediaUrlResolverService,
     @InjectQueue('memory-extractor')
     private readonly memoryExtractorQueue: Queue,
     @InjectQueue('rag-indexer')
@@ -187,14 +189,32 @@ export class AiAgentRunnerService {
       await this.resolveToolsAndSkills(agent.id, agent.kind);
 
     const startedAt = Date.now();
+
+    // Resolve URLs playable de mídia (imagens etc) ANTES de construir
+    // o prompt — a Anthropic SDK precisa de URLs públicas pra image
+    // blocks. Cache vive em Message.content.mediaUrl, então runs
+    // subsequentes na mesma conversa não pagam de novo.
+    const chronological = recentMessages.reverse();
+    const channelTypeByConv = new Map<string, string>([
+      [conversation.id, channel.type],
+    ]);
+    const mediaUrls = await this.mediaUrlResolver
+      .resolveMany(chronological, channelTypeByConv)
+      .catch((err) => {
+        this.logger.warn(
+          `media-url-resolver failed (run=${run.id}): ${err?.message ?? err}`,
+        );
+        return new Map<string, { url: string; mimeType?: string }>();
+      });
+
     const messages = this.promptBuilder.buildMessages({
       organization,
       agent,
       channel,
       contact,
       conversation,
-      // Reverse to chronological order for the LLM.
-      recentMessages: recentMessages.reverse(),
+      recentMessages: chronological,
+      mediaUrls,
       memorySummary: memory?.summary ?? null,
       memoryFacts: (memory?.facts as Record<string, unknown>) ?? null,
       triggerMessage,

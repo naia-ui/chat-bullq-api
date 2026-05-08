@@ -8,7 +8,7 @@ import {
   Message,
   Organization,
 } from '@prisma/client';
-import { LlmMessage } from '../llm/llm.types';
+import { LlmMessage, LlmContentPart } from '../llm/llm.types';
 
 export interface PromptContext {
   organization: Organization;
@@ -30,7 +30,20 @@ export interface PromptContext {
     category: string | null;
     shortLine: string;
   }>;
+  /** URLs playable resolvidas pelas mensagens IMAGE/VIDEO/etc do histórico.
+   *  Quando presente pra uma mensagem IMAGE, vira image block no prompt
+   *  (vision). Ausente = sinaliza só com texto descritivo. */
+  mediaUrls?: Map<string, { url: string; mimeType?: string }>;
 }
+
+/** Tipos de imagem que a Anthropic SDK aceita pra vision. */
+const VISION_MIMES = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+]);
 
 const SYSTEM_TEMPLATE = `Você é <%= it.agent.name %>, atendente virtual da <%= it.organization.name %>.
 
@@ -454,23 +467,38 @@ export class PromptBuilderService {
     // reject conversations with two adjacent turns of the same role with a
     // 400 "messages: roles must alternate". Customers regularly send 2-3
     // messages in a row, so this merge is load-bearing.
+    //
+    // Mensagens type=IMAGE viram image block (vision) quando temos URL
+    // pública resolvida em ctx.mediaUrls. Sem URL = fallback pra texto
+    // descritivo "[imagem enviada]". Image só vai em role=user (Anthropic
+    // não aceita imagens em assistant).
     for (const m of ctx.recentMessages) {
-      const text = this.extractText(m);
-      if (!text) continue;
-
       const role: 'user' | 'assistant' =
         m.direction === 'INBOUND' ? 'user' : 'assistant';
+      const parts = this.extractContentParts(m, ctx.mediaUrls, role);
+      if (parts.length === 0) continue;
+
       const last = messages[messages.length - 1];
       if (last && last.role === role) {
-        const lastText =
-          typeof last.content === 'string'
-            ? last.content
-            : Array.isArray(last.content)
-              ? last.content.map((p: any) => p?.text ?? '').join('')
-              : '';
-        last.content = `${lastText}\n${text}`;
+        last.content = mergeContentParts(last.content, parts);
       } else {
-        messages.push({ role, content: text });
+        messages.push({ role, content: parts });
+      }
+    }
+
+    // Normaliza mensagens text-only pra string simples (fast-path do LLM
+    // service). Mensagens com pelo menos um image part ficam como array.
+    for (const msg of messages) {
+      if (msg.role !== 'system' && Array.isArray(msg.content)) {
+        const onlyText = msg.content.every(
+          (p) => p.type === 'text' && !('cache' in p && p.cache),
+        );
+        if (onlyText) {
+          msg.content = msg.content
+            .filter((p) => p.type === 'text')
+            .map((p) => (p as { text: string }).text)
+            .join('\n');
+        }
       }
     }
 
@@ -481,9 +509,19 @@ export class PromptBuilderService {
     // o triggerMessage pra forçar a alternância e dar contexto explícito.
     const tail = messages[messages.length - 1];
     if (!tail || tail.role !== 'user') {
-      const triggerText = this.extractText(ctx.triggerMessage);
-      if (triggerText) {
-        messages.push({ role: 'user', content: triggerText });
+      const triggerParts = this.extractContentParts(
+        ctx.triggerMessage,
+        ctx.mediaUrls,
+        'user',
+      );
+      if (triggerParts.length > 0) {
+        const onlyText = triggerParts.every((p) => p.type === 'text');
+        messages.push({
+          role: 'user',
+          content: onlyText
+            ? triggerParts.map((p) => (p as { text: string }).text).join('\n')
+            : triggerParts,
+        });
       } else {
         // Trigger não-textual (reaction, etc). Fallback minimal pra manter
         // a conversa viva sem inventar conteúdo do cliente.
@@ -495,6 +533,42 @@ export class PromptBuilderService {
     }
 
     return messages;
+  }
+
+  /**
+   * Converte uma Message em array de content parts (text + image). Image
+   * blocks só são emitidos pra role=user (Anthropic não aceita assistant
+   * images) e quando temos URL playable resolvida + mime supported.
+   */
+  private extractContentParts(
+    message: Message,
+    mediaUrls: Map<string, { url: string; mimeType?: string }> | undefined,
+    role: 'user' | 'assistant',
+  ): LlmContentPart[] {
+    const parts: LlmContentPart[] = [];
+    const text = this.extractText(message);
+
+    if (role === 'user' && message.type === 'IMAGE') {
+      const media = mediaUrls?.get(message.id);
+      const mime = (media?.mimeType ?? '').toLowerCase();
+      const supported = !mime || VISION_MIMES.has(mime);
+      if (media?.url && supported) {
+        // Vision: anexa image block antes do caption (se houver).
+        parts.push({ type: 'image', url: media.url });
+      } else {
+        // Fallback: URL não resolvida ou mime não suportado pelo Claude.
+        // Sinaliza explicitamente pra IA não inventar/improvisar.
+        parts.push({
+          type: 'text',
+          text: media?.url
+            ? `[imagem enviada — formato ${mime || 'desconhecido'} não suportado]`
+            : '[imagem enviada — não foi possível carregar pra eu visualizar]',
+        });
+      }
+    }
+
+    if (text) parts.push({ type: 'text', text });
+    return parts;
   }
 
   private extractText(message: Message): string {
@@ -570,10 +644,11 @@ export class PromptBuilderService {
     }
 
     // Image/video/document podem trazer só caption — já tratado acima.
-    // Sem caption nem text, sinaliza explicitamente o tipo (ex:
-    // "[imagem enviada sem legenda]") em vez de só "[image]" pra o LLM
-    // entender o contexto.
-    if (message.type === 'IMAGE') return `${prefix}[imagem enviada sem legenda]`;
+    // IMAGE: o image block (vision) é anexado em extractContentParts; aqui
+    // retornamos string vazia pra evitar duplicação textual quando vai
+    // junto da imagem. Quando a URL não foi resolvida (sem mediaUrl), o
+    // build push '[imagem enviada — URL indisponível]' como fallback.
+    if (message.type === 'IMAGE') return '';
     if (message.type === 'VIDEO') return `${prefix}[vídeo enviado sem legenda]`;
     if (message.type === 'DOCUMENT') {
       const filename = (content?.fileName as string | undefined) ?? '';
@@ -635,4 +710,21 @@ export class PromptBuilderService {
     else relative = `há ${Math.floor(ageDays / 30)} meses`;
     return `${absolute} (${relative})`;
   }
+}
+
+/**
+ * Merge content parts de mensagens consecutivas do mesmo author. Mantém
+ * imagens como blocks separados; concatena os textos com `\n` quando dá.
+ */
+function mergeContentParts(
+  existing: LlmMessage['content'],
+  incoming: LlmContentPart[],
+): LlmContentPart[] {
+  const left: LlmContentPart[] =
+    typeof existing === 'string'
+      ? existing.length > 0
+        ? [{ type: 'text', text: existing }]
+        : []
+      : existing;
+  return [...left, ...incoming];
 }

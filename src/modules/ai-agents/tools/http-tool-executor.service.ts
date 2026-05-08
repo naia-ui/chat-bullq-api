@@ -48,7 +48,7 @@ export class HttpToolExecutorService {
   async execute(
     skill: AiSkill,
     tool: AiTool,
-    input: Record<string, unknown>,
+    rawInput: Record<string, unknown>,
     ctx: ToolContext,
     options: { bypassPendingGate?: boolean } = {},
   ): Promise<ToolResult> {
@@ -68,6 +68,13 @@ export class HttpToolExecutorService {
         },
       };
     }
+
+    // Normaliza emails antes de qualquer uso. APIs do Trivapp (e várias
+    // outras) tratam emails de forma case-sensitive em alguns endpoints
+    // (ex: resetPassword retorna 404 com email "Foo@x.com" mas funciona
+    // com "foo@x.com"). Forçar lowercase + trim no input ANTES do template
+    // resolve essa classe inteira de bug sem depender do agent acertar.
+    const input = this.normalizeEmailInputs(rawInput);
 
     // Gating configurável por (agent, skill): operador marca
     // `ai_agent_skills.requires_approval = true` na UI quando quer que a
@@ -339,5 +346,40 @@ export class HttpToolExecutorService {
             : undefined,
         obj,
       );
+  }
+
+  /**
+   * Normaliza qualquer campo que pareça email no input (top-level ou
+   * dentro de objetos rasos): aplica `.toLowerCase().trim()`. Mantém
+   * outros campos intactos. Defesa preventiva contra APIs case-sensitive
+   * (Trivapp/resetPassword é o caso conhecido — bug Vinicius_leppers
+   * em 2026-05-08).
+   */
+  private normalizeEmailInputs(
+    input: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const normalized: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(input)) {
+      if (this.looksLikeEmailKey(key) && typeof value === 'string') {
+        normalized[key] = value.toLowerCase().trim();
+      } else if (
+        value &&
+        typeof value === 'object' &&
+        !Array.isArray(value)
+      ) {
+        // Recursão de 1 nível pra objetos rasos (ex: { user: { email: ... } })
+        normalized[key] = this.normalizeEmailInputs(
+          value as Record<string, unknown>,
+        );
+      } else {
+        normalized[key] = value;
+      }
+    }
+    return normalized;
+  }
+
+  private looksLikeEmailKey(key: string): boolean {
+    // Match: email, e-mail, userEmail, contactEmail, etc.
+    return /e[-_]?mail$/i.test(key) || /^email/i.test(key);
   }
 }

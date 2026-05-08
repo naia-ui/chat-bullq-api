@@ -59,7 +59,10 @@ export class JudgeService {
       const raw =
         typeof completion.message.content === 'string'
           ? completion.message.content
-          : completion.message.content.map((p) => p.text).join('');
+          : completion.message.content
+              .filter((p) => p.type === 'text')
+              .map((p) => p.text)
+              .join('');
 
       const verdict = this.parseVerdict(raw);
       this.logger.log({

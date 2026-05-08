@@ -123,6 +123,9 @@ export class LlmService {
 
     for (const m of input) {
       if (m.role === 'system') {
+        // System só aceita texto na Anthropic — filtra qualquer image
+        // que indevidamente apareça aqui (não deveria, system é construído
+        // pelo prompt-builder com texto only).
         const blocks = this.toTextBlocks(m.content);
         if (blocks.length > 0) system = blocks;
         continue;
@@ -132,7 +135,10 @@ export class LlmService {
         const text =
           typeof m.content === 'string'
             ? m.content
-            : m.content.map((b) => b.text).join('');
+            : m.content
+                .filter((b) => b.type === 'text')
+                .map((b) => (b as { text: string }).text)
+                .join('');
         if (!m.toolCallId) {
           this.logger.warn('Tool message without toolCallId — dropping');
           continue;
@@ -148,23 +154,39 @@ export class LlmService {
       flushToolResults();
 
       if (m.role === 'user') {
-        const blocks = this.toTextBlocks(m.content);
+        // User pode ter texto + imagem (vision). Mantemos string simples
+        // quando é texto puro sem cache, pra cair no fast-path antigo.
+        const blocks = this.toUserContentBlocks(m.content);
         if (blocks.length === 0) continue;
-        // Anthropic aceita string OU array. Pra preservar cache_control,
-        // mando array sempre que houver flag de cache; senão string simples.
-        const hasCache = blocks.some((b) => b.cache_control);
-        out.push({
-          role: 'user',
-          content: hasCache ? blocks : blocks.map((b) => b.text).join(''),
-        });
+        const hasNonText = blocks.some((b) => b.type !== 'text');
+        const hasCache = blocks.some(
+          (b) =>
+            b.type === 'text' &&
+            (b as Anthropic.TextBlockParam).cache_control !== undefined,
+        );
+        if (!hasNonText && !hasCache) {
+          out.push({
+            role: 'user',
+            content: blocks.map((b) =>
+              b.type === 'text' ? (b as Anthropic.TextBlockParam).text : '',
+            ).join(''),
+          });
+        } else {
+          out.push({ role: 'user', content: blocks });
+        }
         continue;
       }
 
       if (m.role === 'assistant') {
+        // Assistant não retorna imagens — filtramos qualquer image part
+        // por defesa (não deveria aparecer aqui).
         const text =
           typeof m.content === 'string'
             ? m.content
-            : m.content.map((b) => b.text).join('');
+            : m.content
+                .filter((b) => b.type === 'text')
+                .map((b) => (b as { text: string }).text)
+                .join('');
         const contentBlocks: Array<
           Anthropic.TextBlockParam | Anthropic.ToolUseBlockParam
         > = [];
@@ -191,9 +213,8 @@ export class LlmService {
   }
 
   /**
-   * Normaliza content (string OU array de LlmTextPart) em
-   * `TextBlockParam[]`. Filtra blocks vazios — Anthropic 400 se mandar
-   * `{type:'text', text:''}`. Propaga `cache: true` como `cache_control`.
+   * Normaliza content em `TextBlockParam[]`. Para uso onde só TEXTO faz
+   * sentido (system prompt). Filtra image parts e blocks vazios.
    */
   private toTextBlocks(
     content: LlmMessage['content'],
@@ -202,15 +223,69 @@ export class LlmService {
       typeof content === 'string'
         ? [{ type: 'text' as const, text: content }]
         : content;
-    return raw
-      .filter((b) => b.text && b.text.length > 0)
-      .map((b) => {
-        const block: Anthropic.TextBlockParam = { type: 'text', text: b.text };
-        if ('cache' in b && b.cache) {
+    const blocks: Anthropic.TextBlockParam[] = [];
+    for (const part of raw) {
+      if (part.type !== 'text') continue;
+      if (!part.text || part.text.length === 0) continue;
+      const block: Anthropic.TextBlockParam = { type: 'text', text: part.text };
+      if ('cache' in part && part.cache) {
+        block.cache_control = { type: 'ephemeral' };
+      }
+      blocks.push(block);
+    }
+    return blocks;
+  }
+
+  /**
+   * Normaliza content de mensagem `user` em blocks que a Anthropic aceita
+   * em messages: text + image. Image vai como `source.type='url'` quando
+   * temos URL pública (caso default — todos os 3 canais resolvem mídia
+   * pra URL nossa via media-resolver) ou `source.type='base64'` quando
+   * passaram base64 explícito.
+   */
+  private toUserContentBlocks(
+    content: LlmMessage['content'],
+  ): Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> {
+    const raw =
+      typeof content === 'string'
+        ? [{ type: 'text' as const, text: content }]
+        : content;
+    const blocks: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> =
+      [];
+    for (const part of raw) {
+      if (part.type === 'text') {
+        if (!part.text || part.text.length === 0) continue;
+        const block: Anthropic.TextBlockParam = {
+          type: 'text',
+          text: part.text,
+        };
+        if ('cache' in part && part.cache) {
           block.cache_control = { type: 'ephemeral' };
         }
-        return block;
-      });
+        blocks.push(block);
+        continue;
+      }
+      if (part.type === 'image') {
+        if (part.url) {
+          blocks.push({
+            type: 'image',
+            source: { type: 'url', url: part.url },
+          });
+        } else if (part.base64) {
+          blocks.push({
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: part.base64
+                .mediaType as Anthropic.Base64ImageSource['media_type'],
+              data: part.base64.data,
+            },
+          });
+        }
+        // Image sem url nem base64 → drop silenciosamente.
+      }
+    }
+    return blocks;
   }
 
   /**

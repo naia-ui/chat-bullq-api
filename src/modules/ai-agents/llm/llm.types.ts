@@ -12,7 +12,22 @@ export interface LlmTextPart {
   cache?: boolean;
 }
 
-export type LlmContent = string | LlmTextPart[];
+/**
+ * Image input block. Anthropic SDK aceita tanto URL pública quanto base64.
+ * URL é o caminho preferido — Anthropic baixa o bytes do lado deles uma
+ * vez por request. Base64 só quando a URL não é pública (raro hoje, todos
+ * os 3 canais resolvem mídia pra URL pública via media-resolver).
+ */
+export interface LlmImagePart {
+  type: 'image';
+  /** URL pública (HTTPS) playable. Caso default. */
+  url?: string;
+  /** Fallback base64. `data` sem prefixo `data:image/...;base64,`. */
+  base64?: { mediaType: string; data: string };
+}
+
+export type LlmContentPart = LlmTextPart | LlmImagePart;
+export type LlmContent = string | LlmContentPart[];
 
 export interface LlmMessage {
   role: LlmRole;
