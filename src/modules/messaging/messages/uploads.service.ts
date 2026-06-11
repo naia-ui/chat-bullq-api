@@ -47,6 +47,36 @@ export class UploadsService {
     'audio/webm;codecs=opus',
   ]);
 
+  // 64MB: acima do cap de vídeo do WhatsApp (16MB) e de imagem (5MB) — o
+  // provider rejeita o que não aceitar; aqui só barramos abusos óbvios.
+  static readonly MAX_MEDIA_BYTES = 64 * 1024 * 1024;
+
+  private static readonly ALLOWED_MEDIA_MIME = new Set([
+    // image
+    'image/jpeg',
+    'image/jpg',
+    'image/png',
+    'image/gif',
+    'image/webp',
+    'image/heic',
+    // video
+    'video/mp4',
+    'video/quicktime',
+    'video/3gpp',
+    'video/webm',
+    // document
+    'application/pdf',
+    'application/zip',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-powerpoint',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'text/plain',
+    'text/csv',
+  ]);
+
   private readonly rootDir: string;
   private readonly publicBaseUrl: string;
 
@@ -107,6 +137,51 @@ export class UploadsService {
       mimeType: mime,
       size: input.buffer.byteLength,
       filename: input.originalFilename || filename,
+    };
+  }
+
+  /**
+   * Upload de mídia do operador (anexo do chat): imagem, vídeo ou documento.
+   * Áudio gravado no app continua indo pelo saveAudio (que transcoda pra
+   * OGG/Opus voice note); aqui é o caminho do clipe de papel.
+   */
+  async saveMedia(file: {
+    buffer: Buffer;
+    mimetype: string;
+    originalname?: string;
+  }): Promise<UploadResult> {
+    if (!file?.buffer?.byteLength) {
+      throw new BadRequestException('Empty upload');
+    }
+    if (file.buffer.byteLength > UploadsService.MAX_MEDIA_BYTES) {
+      throw new BadRequestException(
+        `File too large (max ${UploadsService.MAX_MEDIA_BYTES / 1024 / 1024}MB)`,
+      );
+    }
+    const mime = (file.mimetype || 'application/octet-stream')
+      .split(';')[0]
+      .trim();
+    if (!UploadsService.ALLOWED_MEDIA_MIME.has(mime)) {
+      throw new BadRequestException(`Unsupported file type: ${mime}`);
+    }
+
+    const dateFolder = new Date().toISOString().slice(0, 10);
+    const dir = path.join(this.rootDir, 'media', dateFolder);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    const id = crypto.randomBytes(16).toString('hex');
+    const ext = this.extFor(mime, file.originalname);
+    const filename = `${id}${ext}`;
+    const fullPath = path.join(dir, filename);
+    await fs.promises.writeFile(fullPath, file.buffer);
+
+    const url = `${this.publicBaseUrl}/media/${dateFolder}/${filename}`;
+    this.logger.log(`Media saved: ${fullPath} -> ${url}`);
+    return {
+      url,
+      mimeType: mime,
+      size: file.buffer.byteLength,
+      filename: file.originalname || filename,
     };
   }
 
