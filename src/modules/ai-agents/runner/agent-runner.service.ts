@@ -381,6 +381,7 @@ export class AiAgentRunnerService {
           },
           customSkillsByName,
           replyAlreadySuccessful,
+          agent.kind,
         );
 
         for (const result of toolResults) {
@@ -595,6 +596,7 @@ export class AiAgentRunnerService {
     ctx: ToolContext,
     customSkillsByName: Map<string, AiSkill & { tool: AiTool | null }>,
     alreadyRepliedFromPriorIteration: boolean,
+    agentKind: 'ORCHESTRATOR' | 'WORKER' = 'WORKER',
   ): Promise<
     Array<{
       toolCallId: string;
@@ -686,8 +688,11 @@ export class AiAgentRunnerService {
                   );
             output = result.output;
             finalAction = result.finalAction;
-          } else if (this.registry.has(call.name)) {
-            // Built-in.
+          } else if (
+            this.registry.has(call.name) &&
+            this.registry.isAllowedForAgent(call.name, agentKind, ctx.agentId)
+          ) {
+            // Built-in (gate de kind + allowlist por agente, ex.: client-ops).
             const tool = this.registry.get(call.name);
             const result = await tool.execute(call.arguments, ctx);
             output = result.output;
@@ -863,8 +868,9 @@ export class AiAgentRunnerService {
       }
     }
 
-    // Built-in defaults — always available based on agent kind.
-    const defaultLlm = this.registry.getLlmDefinitionsForKind(kind);
+    // Built-in defaults — always available based on agent kind (tools com
+    // allowlist de agentes só entram pro agente listado, ex.: client-ops).
+    const defaultLlm = this.registry.getLlmDefinitionsForKind(kind, agentId);
 
     const seen = new Set<string>();
     const llmTools: LlmToolDefinition[] = [];

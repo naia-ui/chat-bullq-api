@@ -249,7 +249,10 @@ export class EvalRunnerService {
     const seen = new Set<string>();
 
     // Built-ins for the agent's kind
-    for (const def of this.registry.getLlmDefinitionsForKind(agent.kind)) {
+    for (const def of this.registry.getLlmDefinitionsForKind(
+      agent.kind,
+      agent.id,
+    )) {
       if (seen.has(def.name)) continue;
       seen.add(def.name);
       defs.push(def);
