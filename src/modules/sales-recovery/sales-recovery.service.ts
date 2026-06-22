@@ -1,4 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { Card, Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PipelinesService } from '../pipelines/pipelines.service';
@@ -9,6 +11,10 @@ import {
 import { RecoveryOutreachService } from './recovery-outreach.service';
 import { RecoveryConfigService } from './recovery-config.service';
 import { KirvanoNormalized } from './webhooks/kirvano-payload';
+import {
+  RECOVERY_OUTREACH_QUEUE,
+  RECOVERY_OUTREACH_JOB,
+} from './sales-recovery.constants';
 
 export interface RecoveryActionResult {
   status:
@@ -38,6 +44,7 @@ export class SalesRecoveryService {
     private readonly repo: RecoveryCardsRepository,
     private readonly outreach: RecoveryOutreachService,
     private readonly config: RecoveryConfigService,
+    @InjectQueue(RECOVERY_OUTREACH_QUEUE) private readonly outreachQueue: Queue,
   ) {}
 
   // ─── Webhook: Oportunidade ───────────────────────────────────
@@ -57,7 +64,6 @@ export class SalesRecoveryService {
     // telefone — sem telefone não há como contatar, mas ainda registramos
     // o card pra visibilidade.
     let contactId: string | null = null;
-    let externalId: string | null = null;
     if (k.customerPhone) {
       const resolved = await this.outreach.resolveContact(
         organizationId,
@@ -65,7 +71,6 @@ export class SalesRecoveryService {
         { phone: k.customerPhone, name: k.customerName, email: k.customerEmail },
       );
       contactId = resolved.contactId;
-      externalId = resolved.externalId;
     }
 
     // Idempotência: 1 card aberto por contato; senão dedupe pelo checkout.
@@ -94,48 +99,129 @@ export class SalesRecoveryService {
       data: { metadata: this.buildMetadata(k) as Prisma.InputJsonValue },
     });
 
-    // Cold outreach: dispara a 1ª mensagem e move pra "Tentativa de Contato".
-    // Se o envio for pulado (ex.: canal oficial sem template HSM aprovado), o
-    // card fica em Oportunidade — a IA ainda assume se o lead responder.
-    if (contactId && externalId) {
-      try {
-        const { conversationId, sent } = await this.outreach.sendOpener({
-          organizationId,
-          channelId,
-          contactId,
-          externalId,
-          agentId: this.config.recoveryAgentId,
-          vars: {
-            nome: k.customerName ?? '',
-            produto:
-              this.config.productAlias(k.productUuid) ?? k.productName ?? '',
-            link: k.checkoutUrl ?? '',
+    // Cold outreach: abandono dispara na hora; PIX/boleto/recusado esperam
+    // (delay configurável) e só enviam se o lead ainda não pagou. Sem contato
+    // (sem telefone) não há como contatar — card fica em Oportunidade.
+    if (contactId) {
+      const delayMs = this.config.outreachDelayMsForEvent(k.event);
+      if (delayMs <= 0) {
+        await this.dispatchOutreach(created.id).catch((err) =>
+          this.logger.warn(
+            `Outreach imediato falhou card=${created.id}: ${(err as Error).message}`,
+          ),
+        );
+      } else {
+        await this.outreachQueue.add(
+          RECOVERY_OUTREACH_JOB,
+          { cardId: created.id },
+          {
+            delay: delayMs,
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 30_000 },
+            removeOnComplete: true,
+            removeOnFail: false,
           },
-        });
-        // Vincula a conversa ao card mesmo se a mensagem não saiu.
-        await this.prisma.card.update({
-          where: { id: created.id },
-          data: {
-            conversationId,
-            metadata: this.buildMetadata(
-              k,
-              sent
-                ? { outreach: { attempts: 1, lastSentAt: new Date().toISOString() } }
-                : undefined,
-            ) as Prisma.InputJsonValue,
-          },
-        });
-        if (sent) {
-          await this.moveToKey(organizationId, created.id, 'contact_attempt');
-        }
-      } catch (err) {
-        this.logger.warn(
-          `Outreach falhou pro card ${created.id} — fica em Oportunidade: ${(err as Error).message}`,
+        );
+        this.logger.log(
+          `Outreach agendado em ${Math.round(delayMs / 60000)}min card=${created.id} (${k.event})`,
         );
       }
     }
 
     return { status: 'created', cardId: created.id };
+  }
+
+  /**
+   * Dispara o opener pro card SE ainda fizer sentido: card aberto, ainda em
+   * Oportunidade (não pago) e respeitando o cooldown de 24h por contato.
+   * Usado tanto no envio imediato quanto no job agendado (após o delay).
+   */
+  async dispatchOutreach(cardId: string): Promise<void> {
+    const channelId = this.config.outreachChannelId;
+    if (!channelId) return;
+
+    const card = await this.prisma.card.findUnique({
+      where: { id: cardId },
+      include: { contact: { select: { name: true } } },
+    });
+    if (!card || card.status !== 'OPEN' || !card.contactId) return;
+
+    // Só dispara se ainda está em Oportunidade — se já pagou/mudou, não manda.
+    const oppStageId = await this.repo.resolveStageId(
+      card.organizationId,
+      'opportunity',
+    );
+    if (card.stageId !== oppStageId) return;
+
+    // Cooldown: no máx 1 mensagem de recuperação por contato a cada 24h.
+    if (await this.hasRecentOutreach(card.organizationId, card.contactId)) {
+      this.logger.log(`Outreach pulado (cooldown ${this.config.cooldownHours}h) card=${cardId}`);
+      return;
+    }
+
+    const cc = await this.prisma.contactChannel.findFirst({
+      where: { contactId: card.contactId, channelId },
+      select: { externalId: true },
+    });
+    if (!cc) return;
+
+    const meta = (card.metadata as Record<string, any>) ?? {};
+    const k = (meta.kirvano as Record<string, any>) ?? {};
+    const { conversationId, sent } = await this.outreach.sendOpener({
+      organizationId: card.organizationId,
+      channelId,
+      contactId: card.contactId,
+      externalId: cc.externalId,
+      agentId: this.config.recoveryAgentId,
+      vars: {
+        nome: card.contact?.name ?? '',
+        produto:
+          this.config.productAlias(k.productUuid ?? null) ??
+          k.productName ??
+          '',
+        link: k.checkoutUrl ?? '',
+      },
+    });
+
+    await this.prisma.card.update({
+      where: { id: cardId },
+      data: {
+        conversationId,
+        ...(sent
+          ? {
+              metadata: {
+                ...meta,
+                outreach: {
+                  attempts: 1,
+                  lastSentAt: new Date().toISOString(),
+                },
+              } as Prisma.InputJsonValue,
+            }
+          : {}),
+      },
+    });
+
+    if (sent) {
+      await this.moveToKey(card.organizationId, cardId, 'contact_attempt');
+    }
+  }
+
+  /** Já houve mensagem de recuperação pro contato dentro da janela de cooldown? */
+  private async hasRecentOutreach(
+    organizationId: string,
+    contactId: string,
+  ): Promise<boolean> {
+    const pipelineId = await this.repo.getPipelineId(organizationId);
+    const sinceMs = Date.now() - this.config.cooldownHours * 60 * 60 * 1000;
+    const cards = await this.prisma.card.findMany({
+      where: { organizationId, pipelineId, contactId },
+      select: { metadata: true },
+    });
+    for (const c of cards) {
+      const ls = (c.metadata as any)?.outreach?.lastSentAt;
+      if (ls && new Date(ls).getTime() > sinceMs) return true;
+    }
+    return false;
   }
 
   // ─── Webhook: fechamento ─────────────────────────────────────
@@ -217,7 +303,10 @@ export class SalesRecoveryService {
     }
 
     const channelId = this.config.outreachChannelId;
-    if (card.contactId && channelId) {
+    const cooldownOk =
+      card.contactId &&
+      !(await this.hasRecentOutreach(organizationId, card.contactId));
+    if (card.contactId && channelId && cooldownOk) {
       const cc = await this.prisma.contactChannel.findFirst({
         where: { contactId: card.contactId, channelId },
         select: { externalId: true },
