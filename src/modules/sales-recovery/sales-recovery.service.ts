@@ -107,7 +107,8 @@ export class SalesRecoveryService {
           agentId: this.config.recoveryAgentId,
           vars: {
             nome: k.customerName ?? '',
-            produto: k.productName ?? '',
+            produto:
+              this.config.productAlias(k.productUuid) ?? k.productName ?? '',
             link: k.checkoutUrl ?? '',
           },
         });
@@ -233,7 +234,10 @@ export class SalesRecoveryService {
             agentId: this.config.recoveryAgentId,
             vars: {
               nome: card.contact?.name ?? '',
-              produto: kirvano.productName ?? '',
+              produto:
+                this.config.productAlias(kirvano.productUuid ?? null) ??
+                kirvano.productName ??
+                '',
               link: kirvano.checkoutUrl ?? '',
             },
           });
