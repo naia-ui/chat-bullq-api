@@ -66,6 +66,33 @@ export class RecoveryConfigService {
     return Number.isFinite(n) && n > 0 ? n : 3;
   }
 
+  /** Janela mínima entre mensagens de recuperação pro mesmo contato (horas). */
+  get cooldownHours(): number {
+    const n = Number(this.config.get<string>('RECOVERY_COOLDOWN_HOURS'));
+    return Number.isFinite(n) && n > 0 ? n : 24;
+  }
+
+  /** Eventos que disparam o opener IMEDIATAMENTE (sem delay). */
+  get immediateEvents(): string[] {
+    const raw = this.config.get<string>('RECOVERY_IMMEDIATE_EVENTS');
+    return (raw ?? 'ABANDONED_CART')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  /** Minutos de espera antes do opener pros eventos NÃO imediatos. */
+  get delayMinutes(): number {
+    const n = Number(this.config.get<string>('RECOVERY_DELAY_MINUTES'));
+    return Number.isFinite(n) && n >= 0 ? n : 10;
+  }
+
+  /** Delay (ms) do opener pro evento: 0 nos imediatos, senão delayMinutes. */
+  outreachDelayMsForEvent(event: string): number {
+    if (this.immediateEvents.includes(event)) return 0;
+    return this.delayMinutes * 60 * 1000;
+  }
+
   /**
    * Template da 1ª mensagem proativa. Placeholders: {nome} {produto} {link}.
    * Mantido curto de propósito (deliverability via Zappfy não-oficial).

@@ -7,12 +7,14 @@ import { RecoveryCardsRepository } from './recovery-cards.repository';
 import { RecoveryOutreachService } from './recovery-outreach.service';
 import { SalesRecoveryService } from './sales-recovery.service';
 import { RecoveryWatchdogCron } from './recovery-watchdog.cron';
+import { RecoveryOutreachProcessor } from './recovery-outreach.processor';
 import { KirvanoWebhookController } from './webhooks/kirvano-webhook.controller';
 import { KirvanoEventsService } from './webhooks/kirvano-events.service';
 import { KirvanoEventsProcessor } from './webhooks/kirvano-events.processor';
 import {
   KIRVANO_EVENTS_QUEUE,
   RECOVERY_WATCHDOG_QUEUE,
+  RECOVERY_OUTREACH_QUEUE,
 } from './sales-recovery.constants';
 
 /**
@@ -26,6 +28,7 @@ import {
     BullModule.registerQueue(
       { name: KIRVANO_EVENTS_QUEUE },
       { name: RECOVERY_WATCHDOG_QUEUE },
+      { name: RECOVERY_OUTREACH_QUEUE },
       { name: 'outbound-messages' },
     ),
     PipelinesModule,
@@ -40,6 +43,7 @@ import {
     KirvanoEventsService,
     KirvanoEventsProcessor,
     RecoveryWatchdogCron,
+    RecoveryOutreachProcessor,
   ],
   exports: [SalesRecoveryService],
 })
