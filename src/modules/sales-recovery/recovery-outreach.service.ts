@@ -303,22 +303,23 @@ export class RecoveryOutreachService {
   }
 
   /**
-   * Monta o objeto de template HSM da Cloud API. Convenção: o template
-   * aprovado deve ter 3 variáveis no corpo, na ordem {{1}}=nome, {{2}}=produto,
-   * {{3}}=link. (Meta exige contagem exata; vars vazias viram "-".)
+   * Monta o objeto de template HSM da Cloud API pro `brvy_recuperacao_checkout`:
+   * 2 variáveis no corpo — {{1}}=primeiro nome do lead, {{2}}=nome/alias do
+   * produto. (Meta exige contagem exata; vazio vira "-".)
    */
   private buildTemplate(
     name: string,
     vars: OpenerVars,
   ): Prisma.InputJsonValue {
     const param = (v: string) => ({ type: 'text', text: v?.trim() || '-' });
+    const firstName = (vars.nome ?? '').trim().split(/\s+/)[0] ?? '';
     return {
       name,
       language: { code: this.config.templateLang },
       components: [
         {
           type: 'body',
-          parameters: [param(vars.nome), param(vars.produto), param(vars.link)],
+          parameters: [param(firstName), param(vars.produto)],
         },
       ],
     };

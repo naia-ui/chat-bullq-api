@@ -107,6 +107,25 @@ export class RecoveryConfigService {
     return this.config.get<string>('RECOVERY_TEMPLATE_LANG') ?? 'pt_BR';
   }
 
+  /**
+   * Alias amigável por produto pras mensagens (variável {{2}} do template).
+   * Formato do env: `uuid=Alias do produto;uuid2=Outro alias` (separador `;`
+   * pra permitir vírgula/espaço no alias). Sem entrada → usa o nome cru da
+   * Kirvano. Substitui a ideia da tabela recovery_products (config, sem DB).
+   */
+  productAlias(productUuid: string | null): string | null {
+    if (!productUuid) return null;
+    const raw = this.config.get<string>('RECOVERY_PRODUCT_ALIASES') ?? '';
+    for (const pair of raw.split(';')) {
+      const idx = pair.indexOf('=');
+      if (idx <= 0) continue;
+      const uuid = pair.slice(0, idx).trim();
+      const alias = pair.slice(idx + 1).trim();
+      if (uuid === productUuid && alias) return alias;
+    }
+    return null;
+  }
+
   /** Cron do watchdog de cards parados. Default: a cada 30min. */
   get watchdogPattern(): string {
     return (
