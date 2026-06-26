@@ -9,6 +9,7 @@ import { ChannelHubModule } from '../channel-hub/channel-hub.module';
 import { PromptBuilderService } from './runner/prompt-builder.service';
 import { AiAgentRunnerService } from './runner/agent-runner.service';
 import { ModelRouterService } from './runner/model-router.service';
+import { AgentRunJanitorService } from './runner/agent-run-janitor.service';
 import { CatalogSyncService } from './runner/catalog-sync.service';
 import { MediaUrlResolverService } from './runner/media-url-resolver.service';
 import { AgentRouterService } from './router/agent-router.service';
@@ -51,6 +52,7 @@ import { EvalsModule } from './evals/evals.module';
     PromptBuilderService,
     AiAgentRunnerService,
     ModelRouterService,
+    AgentRunJanitorService,
     AgentRouterService,
     AgentsService,
     ToolsCatalogService,
