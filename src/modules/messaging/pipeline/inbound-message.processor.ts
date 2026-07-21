@@ -512,14 +512,22 @@ export class InboundMessageProcessor extends WorkerHost {
       (typeof content.caption === 'string' && content.caption) ||
       `[${original.type.toLowerCase()}]`;
 
+    // Quando a citada é um eco de mensagem mandada fora do sistema (o
+    // operador respondeu pelo celular), o provider só nos deu o telefone.
+    // Número cru como autor da citação não ajuda ninguém a se localizar na
+    // conversa — melhor a quote box mostrar só o trecho citado.
+    const rawSender =
+      original.direction === MessageDirection.OUTBOUND
+        ? (original.sender?.name ?? original.senderName)
+        : original.senderName;
+    const senderName =
+      rawSender && !/^\+?\d[\d\s()-]*$/.test(rawSender) ? rawSender : undefined;
+
     return {
       ...replyTo,
       messageId: original.id,
       previewText,
-      senderName:
-        original.direction === MessageDirection.OUTBOUND
-          ? (original.sender?.name ?? original.senderName ?? undefined)
-          : (original.senderName ?? undefined),
+      senderName,
     };
   }
 
