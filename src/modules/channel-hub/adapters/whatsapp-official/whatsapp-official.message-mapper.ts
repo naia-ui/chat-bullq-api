@@ -239,9 +239,49 @@ export class WhatsAppOfficialMessageMapper {
             text: msg.interactive.list_reply?.title,
           };
         }
-        return { text: '[Interactive message]' };
+        // Resposta ao pedido de permissão de ligação — o cliente não digitou
+        // nada, mas a conversa fica sem sentido se a bolha vier vazia.
+        if (msg.interactive?.type === 'call_permission_reply') {
+          const accepted = msg.interactive.call_permission_reply?.response === 'accept';
+          return {
+            interactive: { type: 'button' },
+            text: accepted
+              ? 'Permitiu chamadas de voz'
+              : 'Recusou chamadas de voz',
+          };
+        }
+        return { text: `[${msg.interactive?.type || 'interativo'}]` };
+      // Resposta a botão de TEMPLATE (quick reply). Chega como `button`, não
+      // como `interactive` — sem esse case a bolha virava "[button]".
+      case 'button':
+        return {
+          interactive: { type: 'button', buttonId: msg.button?.payload },
+          text: msg.button?.text || msg.button?.payload || '[botão]',
+        };
+      // Cartão de contato. `contacts[].vcard` vem em base64 aqui (diferente
+      // do não-oficial, que manda o vCard cru), mas `name` e `phones` já vêm
+      // estruturados — usamos eles e ignoramos o vCard.
+      case 'contacts':
+        return { text: this.formatContacts(msg.contacts) };
       default:
         return { text: `[${msg.type || 'unknown'}]` };
     }
+  }
+
+  /** Mesmo formato do canal não-oficial: "Contato: Fulano" + telefones. */
+  private formatContacts(contacts: any): string {
+    if (!Array.isArray(contacts) || contacts.length === 0) return '[contato]';
+    return contacts
+      .map((c) => {
+        const name =
+          c?.name?.formatted_name ||
+          [c?.name?.first_name, c?.name?.last_name].filter(Boolean).join(' ') ||
+          'sem nome';
+        const phones = (c?.phones ?? [])
+          .map((p: any) => p?.phone)
+          .filter(Boolean);
+        return [`Contato: ${name}`, ...phones].join('\n');
+      })
+      .join('\n\n');
   }
 }
