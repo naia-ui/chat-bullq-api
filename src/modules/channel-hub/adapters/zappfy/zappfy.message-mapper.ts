@@ -467,10 +467,60 @@ export class ZappfyMessageMapper {
         },
       };
     }
+    // Botões e listas do canal não-oficial (menu de chatbot e a resposta de
+    // quem clicou). Precisa vir depois dos tipos mais específicos, porque
+    // "templatebuttonreply" também casaria aqui.
+    if (type.includes('button') || type.includes('list')) {
+      return this.formatInteractive(content, msg);
+    }
+
     // Fallback: o Zappfy quase sempre manda uma versão legível da mensagem no
     // `text` de topo, mesmo para tipos que não mapeamos. Usar isso antes de
     // desistir evita a bolha "[Unsupported message type]" na conversa.
     return { text: content.text || msg.text || '[Mensagem não suportada]' };
+  }
+
+  /**
+   * Menu de botões/lista e a resposta de quem clicou.
+   *
+   * Quando é o MENU, mostramos a pergunta e as opções — assim o operador
+   * entende do que a resposta seguinte está falando. Quando é a RESPOSTA,
+   * basta o rótulo escolhido (e `buttonOrListid` guarda o id pra automação).
+   */
+  private formatInteractive(content: any, msg: any): NormalizedInboundMessage['content'] {
+    const chosen =
+      content.Response?.SelectedDisplayText ||
+      content.selectedDisplayText ||
+      content.title ||
+      content.selectedButtonId;
+    const isResponse = (msg.messageType || '').toLowerCase().includes('response');
+
+    if (isResponse && chosen) {
+      return {
+        interactive: { type: 'button', buttonId: msg.buttonOrListid || undefined },
+        text: String(chosen),
+      };
+    }
+
+    const question = (content.contentText || content.description || msg.text || '').trim();
+    const options: string[] = [
+      // botões: buttons[].buttonText.displayText
+      ...(content.buttons ?? []).map(
+        (b: any) => b?.buttonText?.displayText || b?.displayText,
+      ),
+      // lista: sections[].rows[].title
+      ...(content.sections ?? []).flatMap((s: any) =>
+        (s?.rows ?? []).map((r: any) => r?.title),
+      ),
+    ]
+      .filter(Boolean)
+      .map((o: string) => `• ${o}`);
+
+    const text = [question, ...options].filter(Boolean).join('\n');
+    return {
+      interactive: { type: content.sections ? 'list' : 'button' },
+      text: text || '[menu]',
+    };
   }
 
   /**

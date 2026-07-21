@@ -130,3 +130,66 @@ describe('ZappfyMessageMapper — enquete', () => {
     expect(out?.content.text).toBe('Enquete: Vem no evento?\n• Sim\n• Não');
   });
 });
+
+describe('ZappfyMessageMapper — botões e listas', () => {
+  it('menu de botões mostra a pergunta e as opções', () => {
+    const out = mapper.normalizeInbound(
+      event({
+        messageType: 'ButtonsMessage',
+        text: '',
+        content: {
+          contentText: 'Posso te ajudar em algo mais? 🙂',
+          buttons: [
+            { buttonID: 'Encerrar', buttonText: { displayText: 'Encerrar' } },
+            { buttonID: 'Voltaraomenu', buttonText: { displayText: 'Voltar ao menu' } },
+          ],
+        },
+      }),
+    );
+    expect(out?.content.text).toBe('Posso te ajudar em algo mais? 🙂\n• Encerrar\n• Voltar ao menu');
+  });
+
+  it('resposta de botão mostra só o que a pessoa clicou', () => {
+    const out = mapper.normalizeInbound(
+      event({
+        messageType: 'ButtonsResponseMessage',
+        text: '',
+        buttonOrListid: 'Voltaraomenu',
+        content: { Response: { SelectedDisplayText: 'Voltar ao menu' } },
+      }),
+    );
+    expect(out?.content).toEqual({
+      interactive: { type: 'button', buttonId: 'Voltaraomenu' },
+      text: 'Voltar ao menu',
+    });
+  });
+
+  it('resposta de lista mostra a opção escolhida', () => {
+    const out = mapper.normalizeInbound(
+      event({
+        messageType: 'ListResponseMessage',
+        text: '',
+        content: { title: 'Pedir novo endereço', listType: 1 },
+      }),
+    );
+    expect(out?.content.text).toBe('Pedir novo endereço');
+  });
+
+  it('menu de lista mostra as linhas das seções', () => {
+    const out = mapper.normalizeInbound(
+      event({
+        messageType: 'ListMessage',
+        text: '',
+        content: {
+          description: 'Sobre o que você deseja falar?',
+          sections: [
+            { rows: [{ title: 'Pedir novo endereço' }, { title: 'Cancelar contrato' }] },
+          ],
+        },
+      }),
+    );
+    expect(out?.content.text).toBe(
+      'Sobre o que você deseja falar?\n• Pedir novo endereço\n• Cancelar contrato',
+    );
+  });
+});
