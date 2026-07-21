@@ -15,6 +15,8 @@ export class ZappfyContactEnricherService {
   private readonly logger = new Logger(ZappfyContactEnricherService.name);
   /** Depois disso a cópia local da foto é considerada velha e rebuscada. */
   private static readonly AVATAR_TTL_DAYS = 7;
+  /** Quanto tempo esperar antes de perguntar de novo por um contato que não tem foto. */
+  private static readonly NEGATIVE_TTL_MS = 24 * 60 * 60 * 1000;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -47,6 +49,23 @@ export class ZappfyContactEnricherService {
       const stale =
         ageDays === null || ageDays > ZappfyContactEnricherService.AVATAR_TTL_DAYS;
       if (contactChannel.contact.avatarUrl && !stale && !force) return;
+
+      // Contato SEM foto (perfil vazio ou privacidade) nunca preenche
+      // avatarUrl — sem esta trava, toda mensagem que ele manda dispara duas
+      // chamadas no provider de novo, pra sempre. Guardamos a data da última
+      // tentativa e só reperguntamos no dia seguinte.
+      const metadata = (contactChannel.contact.metadata ?? {}) as Record<string, any>;
+      const checkedAt = metadata.avatarCheckedAt
+        ? new Date(metadata.avatarCheckedAt).getTime()
+        : 0;
+      const checkedRecently =
+        Date.now() - checkedAt < ZappfyContactEnricherService.NEGATIVE_TTL_MS;
+      if (!contactChannel.contact.avatarUrl && checkedRecently && !force) return;
+
+      await this.prisma.contact.update({
+        where: { id: contactChannel.contactId },
+        data: { metadata: { ...metadata, avatarCheckedAt: new Date().toISOString() } },
+      });
 
       const chat = await this.fetchChat(channel, externalContactId);
       if (!chat) return;
