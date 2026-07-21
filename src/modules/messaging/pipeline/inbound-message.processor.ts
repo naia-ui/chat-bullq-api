@@ -420,6 +420,8 @@ export class InboundMessageProcessor extends WorkerHost {
       return { message: updated, isNew: false };
     }
 
+    const replyTo = await this.resolveReplyContext(tx, conversationId, message.replyTo);
+
     try {
       const created = await tx.message.create({
         data: {
@@ -444,7 +446,7 @@ export class InboundMessageProcessor extends WorkerHost {
           metadata: {
             rawPayload: safeJson(message.rawPayload),
             isEcho,
-            replyTo: message.replyTo ? safeJson(message.replyTo) : null,
+            replyTo: replyTo ? safeJson(replyTo) : null,
           },
         },
       });
@@ -464,6 +466,61 @@ export class InboundMessageProcessor extends WorkerHost {
       }
       throw err;
     }
+  }
+
+  /**
+   * Completa o reply vindo do provider com o que só o nosso banco sabe.
+   *
+   * O webhook entrega apenas o id externo da mensagem citada (e, quando dá
+   * sorte, um trecho do texto). A UI precisa do id INTERNO pra transformar a
+   * quote box em "pular pra mensagem" — então casamos o id externo dentro da
+   * mesma conversa e aproveitamos pra herdar preview e autor de quem citou.
+   *
+   * Citada fora da nossa base (anterior ao onboarding do canal, ou apagada):
+   * devolvemos o que veio do provider. A quote box ainda renderiza, só não
+   * vira link — é degradação, não erro.
+   */
+  private async resolveReplyContext(
+    tx: Prisma.TransactionClient,
+    conversationId: string,
+    replyTo: NormalizedInboundMessage['replyTo'],
+  ): Promise<NormalizedInboundMessage['replyTo']> {
+    if (!replyTo?.externalMessageId) return replyTo;
+
+    const original = await tx.message.findUnique({
+      where: {
+        uq_msg_conv_external: {
+          conversationId,
+          externalId: replyTo.externalMessageId,
+        },
+      },
+      select: {
+        id: true,
+        type: true,
+        content: true,
+        senderName: true,
+        direction: true,
+        sender: { select: { name: true } },
+      },
+    });
+    if (!original) return replyTo;
+
+    const content = (original.content ?? {}) as Record<string, any>;
+    const previewText =
+      replyTo.previewText ||
+      (typeof content.text === 'string' && content.text) ||
+      (typeof content.caption === 'string' && content.caption) ||
+      `[${original.type.toLowerCase()}]`;
+
+    return {
+      ...replyTo,
+      messageId: original.id,
+      previewText,
+      senderName:
+        original.direction === MessageDirection.OUTBOUND
+          ? (original.sender?.name ?? original.senderName ?? undefined)
+          : (original.senderName ?? undefined),
+    };
   }
 
   private async checkActiveBotForChannel(channelId: string): Promise<boolean> {

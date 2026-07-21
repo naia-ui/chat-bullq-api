@@ -66,6 +66,16 @@ export interface NormalizedMessageContent {
  */
 export interface ReplyContext {
   externalMessageId?: string;
+  /**
+   * Id interno da Message citada. O mapper não conhece — quem preenche é o
+   * processor, casando `externalMessageId` na mesma conversa. É esse campo
+   * que faz a quote box virar link "pular pra mensagem" no inbox.
+   */
+  messageId?: string;
+  /** Trecho da mensagem citada, exibido dentro da quote box. */
+  previewText?: string;
+  /** Quem escreveu a mensagem citada. */
+  senderName?: string;
   story?: { id?: string; url?: string; kind?: 'reply' | 'mention' };
   ad?: { id?: string; title?: string };
 }

@@ -50,13 +50,70 @@ export class ZappfyMessageMapper {
       rawPayload: event,
     };
 
-    if (typeof msg.content === 'object' && msg.content?.contextInfo?.stanzaId) {
-      result.replyTo = {
-        externalMessageId: msg.content.contextInfo.stanzaId,
-      };
-    }
+    const replyTo = this.extractReply(msg);
+    if (replyTo) result.replyTo = replyTo;
 
     return result;
+  }
+
+  /**
+   * Reply nativo (usuário citou uma mensagem no app do WhatsApp).
+   *
+   * O id da citada chega em dois lugares e o Zappfy nem sempre preenche os
+   * dois: `msg.quoted` (mais frequente) e `contextInfo.stanzaID` — atenção ao
+   * **D maiúsculo**, que é como o provider serializa. Líamos `stanzaId` e por
+   * isso nenhum reply de WhatsApp aparecia na quote box do inbox.
+   *
+   * `senderName` fica de fora de propósito: o payload só traz o JID do
+   * participante (`@lid`), que não é exibível. Quem resolve o nome é o
+   * processor, a partir da mensagem citada já persistida.
+   */
+  private extractReply(msg: any): { externalMessageId: string; previewText?: string } | null {
+    const ctx = typeof msg?.content === 'object' ? msg.content?.contextInfo : null;
+    const externalMessageId =
+      (typeof msg?.quoted === 'string' && msg.quoted.trim()) ||
+      ctx?.stanzaID ||
+      ctx?.stanzaId ||
+      null;
+    if (!externalMessageId) return null;
+
+    const previewText = this.previewFromQuoted(ctx?.quotedMessage);
+    return previewText ? { externalMessageId, previewText } : { externalMessageId };
+  }
+
+  /**
+   * O `quotedMessage` é o envelope cru do WhatsApp: uma chave por tipo de
+   * mensagem. Extraímos só o suficiente pra linha de preview da quote box.
+   */
+  private previewFromQuoted(quoted: any): string | undefined {
+    if (!quoted || typeof quoted !== 'object') return undefined;
+
+    const text =
+      quoted.conversation ||
+      quoted.extendedTextMessage?.text ||
+      quoted.imageMessage?.caption ||
+      quoted.videoMessage?.caption ||
+      quoted.documentMessage?.caption;
+    if (typeof text === 'string' && text.trim()) return text.trim();
+
+    if (quoted.imageMessage) return '[imagem]';
+    if (quoted.videoMessage || quoted.ptvMessage) return '[vídeo]';
+    if (quoted.audioMessage) return '[áudio]';
+    if (quoted.stickerMessage) return '[figurinha]';
+    if (quoted.documentMessage) {
+      const name = quoted.documentMessage.fileName;
+      return typeof name === 'string' && name.trim() ? name.trim() : '[documento]';
+    }
+    if (quoted.locationMessage) return '[localização]';
+    if (quoted.contactMessage) {
+      const name = quoted.contactMessage.displayName;
+      return typeof name === 'string' && name.trim() ? `Contato: ${name.trim()}` : '[contato]';
+    }
+    if (quoted.pollCreationMessage || quoted.pollCreationMessageV3) {
+      const name = quoted.pollCreationMessage?.name || quoted.pollCreationMessageV3?.name;
+      return typeof name === 'string' && name.trim() ? `Enquete: ${name.trim()}` : '[enquete]';
+    }
+    return undefined;
   }
 
   /**
