@@ -1,4 +1,5 @@
 import { Module, forwardRef } from '@nestjs/common';
+import { BullModule } from '@nestjs/bullmq';
 import { ZappfyInboundAdapter } from './zappfy.inbound-adapter';
 import { ZappfyOutboundAdapter } from './zappfy.outbound-adapter';
 import { ZappfyMessageMapper } from './zappfy.message-mapper';
@@ -6,6 +7,8 @@ import { ZappfyHttpClient } from './zappfy.http-client';
 import { ZappfySyncAdapter } from './zappfy.sync-adapter';
 import { ZappfyContactEnricherService } from './zappfy-contact-enricher.service';
 import { MessagingModule } from '../../../messaging/messaging.module';
+import { AvatarHydrationProcessor } from '../../avatars/avatar-hydration.processor';
+import { AVATAR_HYDRATION_QUEUE } from '../../avatars/avatar-hydration.constants';
 
 @Module({
   imports: [
@@ -13,6 +16,7 @@ import { MessagingModule } from '../../../messaging/messaging.module';
     // MessagingModule — mesmo forwardRef do Gmail/WhatsApp oficial (ciclo
     // channel-hub ↔ messaging).
     forwardRef(() => MessagingModule),
+    BullModule.registerQueue({ name: AVATAR_HYDRATION_QUEUE }),
   ],
   providers: [
     ZappfyInboundAdapter,
@@ -21,6 +25,7 @@ import { MessagingModule } from '../../../messaging/messaging.module';
     ZappfyHttpClient,
     ZappfySyncAdapter,
     ZappfyContactEnricherService,
+    AvatarHydrationProcessor,
   ],
   exports: [
     ZappfyInboundAdapter,

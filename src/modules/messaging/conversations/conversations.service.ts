@@ -5,6 +5,8 @@ import {
   ForbiddenException,
   BadRequestException,
 } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { ChannelType, Conversation, ConversationStatus } from '@prisma/client';
 import { ConversationsRepository, InboxFilters } from './conversations.repository';
 import { ConversationFsmService } from './conversation-fsm.service';
@@ -23,6 +25,13 @@ import { SegmentReadService } from '../../segments/segment-read.service';
 import { ProjectsService } from '../../projects/projects.service';
 import { deriveGroupJid } from '../../segments/group-jid.util';
 import { ZappfyHttpClient } from '../../channel-hub/adapters/zappfy/zappfy.http-client';
+import {
+  AVATAR_HYDRATION_QUEUE,
+  AVATAR_HYDRATION_BATCH,
+  AVATAR_HYDRATION_SPACING_MS,
+  AVATAR_REFRESH_ON_OPEN_DAYS,
+  type AvatarHydrationJob,
+} from '../../channel-hub/avatars/avatar-hydration.constants';
 import { ZappfyContactEnricherService } from '../../channel-hub/adapters/zappfy/zappfy-contact-enricher.service';
 
 const SYNC_MESSAGE_PAGE_SIZE = 50;
@@ -56,7 +65,51 @@ export class ConversationsService {
     private readonly projects: ProjectsService,
     private readonly zappfyHttp: ZappfyHttpClient,
     private readonly contactEnricher: ZappfyContactEnricherService,
+    @InjectQueue(AVATAR_HYDRATION_QUEUE)
+    private readonly avatarQueue: Queue<AvatarHydrationJob>,
   ) {}
+
+  /**
+   * Enfileira a busca da foto das conversas que ainda estão sem, espaçando
+   * uma da outra pra não estourar o limite do provider.
+   *
+   * Só as primeiras da lista (as mais recentes) entram: é o que a pessoa
+   * está vendo. O `jobId` fixo por contato faz o inbox recarregado não
+   * empilhar a mesma busca, e o próprio enricher ignora quem já foi
+   * consultado hoje — então isso não vira tráfego repetido.
+   */
+  private async hydrateMissingAvatars(conversations: any[]): Promise<void> {
+    try {
+      const pending = conversations
+        .filter((c) => !c?.contact?.avatarUrl && c?.channel?.type === 'WHATSAPP_ZAPPFY')
+        .slice(0, AVATAR_HYDRATION_BATCH);
+
+      await Promise.all(
+        pending.map((conversation, index) => {
+          const link = conversation.contact?.channels?.find(
+            (cc: any) => cc.channelId === conversation.channelId,
+          );
+          if (!link?.externalId) return Promise.resolve();
+          return this.avatarQueue.add(
+            'hydrate',
+            {
+              channelId: conversation.channelId,
+              externalContactId: link.externalId,
+            },
+            {
+              jobId: `avatar:${conversation.channelId}:${link.externalId}`,
+              delay: index * AVATAR_HYDRATION_SPACING_MS,
+              removeOnComplete: true,
+              removeOnFail: true,
+            },
+          );
+        }),
+      );
+    } catch (err: any) {
+      // Foto é enfeite: se a fila estiver fora, o inbox continua igual.
+      this.logger.warn(`Não deu pra enfileirar hidratação de avatar: ${err.message}`);
+    }
+  }
 
   /**
    * Participantes de uma conversa de grupo, pro autocomplete de menção.
@@ -260,6 +313,11 @@ export class ConversationsService {
 
     await this.attachProjects(organizationId, conversations as any[]);
 
+    // Fora do caminho da resposta: quem abre o inbox dispara a busca das
+    // fotos que faltam. Chega pela UI por websocket quando cada uma fica
+    // pronta — a lista não espera por isso.
+    void this.hydrateMissingAvatars(conversations as any[]);
+
     return {
       conversations,
       pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
@@ -281,20 +339,40 @@ export class ConversationsService {
   }
 
   /**
-   * Rebusca a foto de perfil quando está velha/ausente. Silencioso por
-   * natureza — foto é enfeite, nunca deve atrapalhar abrir a conversa.
+   * Rebusca a foto de perfil ao abrir a conversa. Silencioso por natureza —
+   * foto é enfeite, nunca deve atrapalhar abrir a conversa.
+   *
+   * Vai pela fila, e não direto no provider, porque o front refaz este GET a
+   * cada poucos segundos enquanto a conversa está aberta: o `jobId` fixo
+   * descarta as repetições e o worker mantém o espaçamento entre as buscas.
+   * O prazo aqui é mais curto que o de fundo — abrir a conversa é justamente
+   * quando a pessoa quer ver a foto atual do contato ou do grupo.
    */
   private async refreshAvatar(conversation: any): Promise<void> {
     try {
-      const channel = await this.prisma.channel.findFirst({
-        where: { id: conversation.channelId, deletedAt: null },
-      });
-      if (!channel || channel.type !== ChannelType.WHATSAPP_ZAPPFY) return;
       const externalId = conversation.contact?.channels?.find(
         (ch: any) => ch.channelId === conversation.channelId,
       )?.externalId;
       if (!externalId) return;
-      await this.contactEnricher.enrich(channel, externalId);
+      const channel = await this.prisma.channel.findFirst({
+        where: { id: conversation.channelId, deletedAt: null },
+        select: { id: true, type: true },
+      });
+      if (!channel || channel.type !== ChannelType.WHATSAPP_ZAPPFY) return;
+
+      await this.avatarQueue.add(
+        'hydrate',
+        {
+          channelId: channel.id,
+          externalContactId: externalId,
+          maxAgeDays: AVATAR_REFRESH_ON_OPEN_DAYS,
+        },
+        {
+          jobId: `avatar:${channel.id}:${externalId}`,
+          removeOnComplete: true,
+          removeOnFail: true,
+        },
+      );
     } catch (err: any) {
       this.logger.debug(`Refresh de avatar falhou: ${err.message}`);
     }

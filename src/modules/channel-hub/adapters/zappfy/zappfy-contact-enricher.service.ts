@@ -3,6 +3,7 @@ import { Channel } from '@prisma/client';
 import { PrismaService } from '../../../../database/prisma.service';
 import { ZappfyHttpClient } from './zappfy.http-client';
 import { UploadsService } from '../../../messaging/messages/uploads.service';
+import { RealtimeGateway } from '../../../realtime/realtime.gateway';
 
 /**
  * Pulls profile picture (and best-effort name) for a WhatsApp contact via
@@ -22,13 +23,23 @@ export class ZappfyContactEnricherService {
     private readonly prisma: PrismaService,
     private readonly httpClient: ZappfyHttpClient,
     private readonly uploads: UploadsService,
+    private readonly realtime: RealtimeGateway,
   ) {}
 
+  /**
+   * @param options.force ignora qualquer prazo e rebusca agora.
+   * @param options.maxAgeDays prazo da cópia local; abrir a conversa usa um
+   *   prazo mais curto que o de fundo, pra troca de foto aparecer mais rápido
+   *   sem transformar cada abertura em requisição no provider.
+   */
   async enrich(
     channel: Channel,
     externalContactId: string,
-    force = false,
+    options: { force?: boolean; maxAgeDays?: number } = {},
   ): Promise<void> {
+    const force = options.force ?? false;
+    const maxAgeDays =
+      options.maxAgeDays ?? ZappfyContactEnricherService.AVATAR_TTL_DAYS;
     try {
       const contactChannel = await this.prisma.contactChannel.findUnique({
         where: {
@@ -46,8 +57,7 @@ export class ZappfyContactEnricherService {
       const ageDays = this.uploads.avatarAgeInDays(
         contactChannel.contact.avatarUrl,
       );
-      const stale =
-        ageDays === null || ageDays > ZappfyContactEnricherService.AVATAR_TTL_DAYS;
+      const stale = ageDays === null || ageDays > maxAgeDays;
       if (contactChannel.contact.avatarUrl && !stale && !force) return;
 
       // Contato SEM foto (perfil vazio ou privacidade) nunca preenche
@@ -102,7 +112,10 @@ export class ZappfyContactEnricherService {
       if (profileName && !contactChannel.contact.name) {
         contactUpdates.name = profileName;
       }
-      if (avatarUrl && !contactChannel.contact.avatarUrl) {
+      // Grava sempre que a URL mudar (e não só quando estava vazia): é isso
+      // que faz a troca de foto no WhatsApp chegar até a tela — a URL carrega
+      // um `?v` novo a cada download.
+      if (avatarUrl && avatarUrl !== contactChannel.contact.avatarUrl) {
         contactUpdates.avatarUrl = avatarUrl;
       }
       if (Object.keys(contactUpdates).length > 0) {
@@ -110,6 +123,19 @@ export class ZappfyContactEnricherService {
           where: { id: contactChannel.contactId },
           data: contactUpdates,
         });
+      }
+
+      // Avisa quem está com o inbox aberto, pra foto aparecer sem recarregar.
+      if (contactUpdates.avatarUrl) {
+        this.realtime.emitToOrg(
+          contactChannel.contact.organizationId,
+          'contact:avatar',
+          {
+            contactId: contactChannel.contactId,
+            avatarUrl: contactUpdates.avatarUrl,
+            name: contactUpdates.name ?? contactChannel.contact.name ?? null,
+          },
+        );
       }
 
       this.logger.log(

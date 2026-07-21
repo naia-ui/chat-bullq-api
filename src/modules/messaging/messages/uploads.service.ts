@@ -130,7 +130,17 @@ export class UploadsService {
     const safeKey = input.key.replace(/[^a-zA-Z0-9_-]/g, '_');
     const filename = `${safeKey}${this.extFor(mime, null)}`;
     await fs.promises.writeFile(path.join(dir, filename), input.buffer);
-    return `${this.publicBaseUrl}/avatars/${filename}`;
+    // O nome do arquivo é estável (um por contato), então sem versão na URL o
+    // navegador continuaria mostrando a foto antiga depois de a pessoa trocar
+    // a dela. Versionamos pelo CONTEÚDO, não pelo horário: foto igual devolve
+    // a mesma URL — e aí a revalidação semanal não vira "mudou a foto" à toa.
+    // (`avatarAgeInDays` ignora a query string.)
+    const version = crypto
+      .createHash('sha1')
+      .update(input.buffer)
+      .digest('hex')
+      .slice(0, 12);
+    return `${this.publicBaseUrl}/avatars/${filename}?v=${version}`;
   }
 
   /**
