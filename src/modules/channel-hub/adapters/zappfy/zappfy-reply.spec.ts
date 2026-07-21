@@ -74,3 +74,34 @@ describe('ZappfyMessageMapper — reply nativo', () => {
     expect(out?.replyTo).toEqual({ externalMessageId: '3EB0SEMPREVIEW' });
   });
 });
+
+describe('ZappfyMessageMapper — convite de grupo', () => {
+  it('vira "Convite para o grupo: <nome>" em vez de bolha vazia', () => {
+    const out = mapper.normalizeInbound(
+      event({
+        messageType: 'GroupInviteMessage',
+        text: '',
+        content: {
+          caption: 'Convite para participar do meu grupo no WhatsApp',
+          groupJID: '120363409967696699@g.us',
+          groupName: 'Maestria',
+          inviteCode: '/G3FZAOUxvkJC36n',
+        },
+      }),
+    );
+
+    expect(out?.content.text).toBe('Convite para o grupo: Maestria');
+  });
+
+  it('cai no texto do provider quando o convite vem sem nome do grupo', () => {
+    const out = mapper.normalizeInbound(
+      event({
+        messageType: 'GroupInviteMessage',
+        text: '',
+        content: { caption: 'Convite para participar do meu grupo no WhatsApp' },
+      }),
+    );
+
+    expect(out?.content.text).toBe('Convite para participar do meu grupo no WhatsApp');
+  });
+});

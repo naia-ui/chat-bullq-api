@@ -354,6 +354,9 @@ export class ZappfyMessageMapper {
     if (type.includes('contact')) return MessageContentType.TEXT;
     if (type.includes('poll')) return MessageContentType.TEXT;
     if (type.includes('album')) return MessageContentType.TEXT;
+    // Convite de grupo: o "conteúdo" é o link, mas o que interessa na
+    // conversa é o nome do grupo pra onde a pessoa foi convidada.
+    if (type.includes('groupinvite')) return MessageContentType.TEXT;
     if (type.includes('button') || type.includes('list')) return MessageContentType.INTERACTIVE;
     return MessageContentType.TEXT;
   }
@@ -435,6 +438,14 @@ export class ZappfyMessageMapper {
     }
     if (type.includes('contact')) {
       return { text: this.formatContact(content, msg) };
+    }
+    if (type.includes('groupinvite')) {
+      const groupName = (content.groupName || '').trim();
+      return {
+        text: groupName
+          ? `Convite para o grupo: ${groupName}`
+          : content.caption || msg.text || '[convite de grupo]',
+      };
     }
     if (type.includes('poll')) {
       return { text: this.formatPoll(content, msg) };
