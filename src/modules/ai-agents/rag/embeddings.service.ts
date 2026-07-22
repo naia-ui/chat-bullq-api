@@ -4,7 +4,8 @@ import type { EmbeddingResult } from './types';
 
 /**
  * Generates embeddings via the OpenAI Embeddings API (`text-embedding-3-small`,
- * 1536 dims, ~$0.02 per 1M tokens). This remains an embeddings-only OpenAI dependency; conversational LLM calls go through Sakana.
+ * 1536 dims, ~$0.02 per 1M tokens). Uses OpenAI directly regardless of which
+ * provider (Anthropic or OpenAI) the calling agent's conversational model uses.
  *
  * The service is stateless: each call is one HTTP request. Batching is
  * supported via `embedBatch` to amortize round-trip latency when indexing

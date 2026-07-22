@@ -53,7 +53,7 @@ export class CreateAgentDto {
   @IsString({ each: true })
   capabilities?: string[];
 
-  @ApiProperty({ example: 'sakana/fugu-ultra-20260615' })
+  @ApiProperty({ example: 'anthropic/claude-sonnet-5' })
   @IsString()
   modelId!: string;
 

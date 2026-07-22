@@ -1,12 +1,3 @@
-/** Default Sakana model for cheap/simple background LLM tasks. */
-export const SAKANA_SIMPLE_MODEL = 'sakana/fugu';
-
-/** Default Sakana model for customer-facing agent conversations. */
-export const SAKANA_CONVERSATION_MODEL = 'sakana/fugu-ultra-20260615';
-
-/** Default OpenAI-compatible base URL for Sakana's API. */
-export const SAKANA_DEFAULT_BASE_URL = 'https://api.sakana.ai/v1';
-
 /** Cheap/fast Anthropic model for simple background LLM tasks. */
 export const ANTHROPIC_SIMPLE_MODEL = 'anthropic/claude-haiku-4-5-20251001';
 
@@ -21,3 +12,14 @@ export const OPENAI_SIMPLE_MODEL = 'openai/gpt-4.1-mini';
 
 /** OpenAI model for customer-facing agent conversations. */
 export const OPENAI_CONVERSATION_MODEL = 'openai/gpt-4.1';
+
+/**
+ * Default cheap/fast model for background LLM tasks (tool iterations,
+ * classification, memory extraction, eval judging) when nothing more
+ * specific is configured. Only Anthropic and OpenAI are supported providers
+ * — Sakana was removed.
+ */
+export const DEFAULT_SIMPLE_MODEL = ANTHROPIC_SIMPLE_MODEL;
+
+/** Default model for customer-facing agent conversations (final synthesis). */
+export const DEFAULT_CONVERSATION_MODEL = ANTHROPIC_CONVERSATION_MODEL;

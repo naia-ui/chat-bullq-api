@@ -1,17 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 import {
-  SAKANA_CONVERSATION_MODEL,
-  SAKANA_SIMPLE_MODEL,
+  DEFAULT_CONVERSATION_MODEL,
+  DEFAULT_SIMPLE_MODEL,
 } from '../llm/llm.constants';
 
 /**
  * Fase da chamada LLM dentro de um turno do agente.
  *  - `tool`      → iteração que (provavelmente) vai pedir/encadear ferramentas.
- *                  É mecânico: sempre roda no modelo barato (fugu).
+ *                  É mecânico: sempre roda no modelo barato.
  *  - `synthesis` → a resposta final ao cliente. Aqui é onde a qualidade pesa,
- *                  então workers escalam pro fugu-ultra; o orquestrador (triagem)
- *                  fica no fugu.
+ *                  então workers escalam pro modelo de conversa; o
+ *                  orquestrador (triagem) fica no barato.
  */
 export type LlmPhase = 'tool' | 'synthesis';
 
@@ -20,8 +20,8 @@ export type AgentKind = 'ORCHESTRATOR' | 'WORKER';
 /**
  * Override opcional por agente, gravado em `AiAgent.modelParams.routing`
  * (coluna JSON já existente — sem migration). Ex.:
- *   { "routing": { "primary": "sakana/fugu",
- *                  "escalation": "sakana/fugu-ultra-20260615",
+ *   { "routing": { "primary": "anthropic/claude-haiku-4-5-20251001",
+ *                  "escalation": "anthropic/claude-sonnet-5",
  *                  "alwaysPrimary": false,
  *                  "escalateSynthesis": true } }
  */
@@ -44,14 +44,15 @@ export interface SelectModelInput {
 }
 
 /**
- * Decide qual modelo Sakana usar em cada chamada do loop do agente.
+ * Decide qual modelo usar em cada chamada do loop do agente. Providers
+ * suportados: Anthropic (Claude) e OpenAI (GPT) — Sakana foi removido.
  *
- * Estratégia (objetivo: usar mais o fugu, ultra só quando necessário):
- *  - Toda iteração de ferramenta roda no `fugu` (barato, baixa latência).
+ * Estratégia (objetivo: usar o modelo barato o máximo possível):
+ *  - Toda iteração de ferramenta roda no modelo barato (baixa latência).
  *  - A síntese final:
- *      • WORKER (especialista de vendas/suporte/impl) → escala pro `fugu-ultra`
- *        (é a resposta que o cliente lê; qualidade importa).
- *      • ORCHESTRATOR (Augusto, triagem/small-talk/ambíguo) → fica no `fugu`.
+ *      • WORKER (especialista de vendas/suporte/impl) → escala pro modelo de
+ *        conversa (é a resposta que o cliente lê; qualidade importa).
+ *      • ORCHESTRATOR (triagem/small-talk/ambíguo) → fica no barato.
  *  - Qualquer agente pode sobrescrever via `modelParams.routing`.
  */
 @Injectable()
@@ -61,13 +62,14 @@ export class ModelRouterService {
   selectModel(input: SelectModelInput): string {
     const routing = this.parseRouting(input.modelParams);
 
-    // Sanitiza pra GARANTIR que só saem daqui modelos Sakana ou Anthropic
-    // reconhecidos. Overrides mal preenchidos (vazio, lixo) caem no
-    // fallback Sakana informado em vez de quebrar no provider.
-    const primary = this.sanitizeModel(routing.primary, SAKANA_SIMPLE_MODEL);
+    // Sanitiza pra GARANTIR que só saem daqui modelos Anthropic ou OpenAI
+    // reconhecidos. Overrides mal preenchidos (vazio, lixo, ou um modelId
+    // legado de um provider removido) caem no fallback informado em vez de
+    // quebrar no provider.
+    const primary = this.sanitizeModel(routing.primary, DEFAULT_SIMPLE_MODEL);
     const escalation = this.sanitizeModel(
       routing.escalation ?? input.modelId,
-      SAKANA_CONVERSATION_MODEL,
+      DEFAULT_CONVERSATION_MODEL,
     );
 
     if (routing.alwaysPrimary) return primary;
@@ -83,16 +85,14 @@ export class ModelRouterService {
   }
 
   /**
-   * Garante que o modelo é um ID reconhecido — Sakana (sakana/*, fugu*),
-   * Anthropic (anthropic/*, claude-*) ou OpenAI (openai/*, gpt-*). Qualquer
-   * outra coisa (override quebrado, vazio) cai no fallback Sakana informado.
+   * Garante que o modelo é um ID reconhecido — Anthropic (anthropic/*,
+   * claude-*) ou OpenAI (openai/*, gpt-*). Qualquer outra coisa (override
+   * quebrado, vazio, ou um modelId legado de provider removido como Sakana)
+   * cai no fallback informado.
    */
   private sanitizeModel(model: string | undefined | null, fallback: string): string {
     const m = (model ?? '').trim();
     if (
-      m.startsWith('sakana/') ||
-      m === 'fugu' ||
-      m.startsWith('fugu-') ||
       m.startsWith('anthropic/') ||
       m.startsWith('claude-') ||
       m.startsWith('openai/') ||

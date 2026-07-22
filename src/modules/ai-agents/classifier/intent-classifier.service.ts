@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { LlmService } from '../llm/llm.service';
 import { LlmMessage } from '../llm/llm.types';
-import { SAKANA_SIMPLE_MODEL } from '../llm/llm.constants';
+import { DEFAULT_SIMPLE_MODEL } from '../llm/llm.constants';
 import {
   CLASSIFIER_SYSTEM_PROMPT,
   buildClassifierUserPrompt,
@@ -34,7 +34,7 @@ import { IntentRouterService } from './intent-router.service';
 @Injectable()
 export class IntentClassifierService {
   private readonly logger = new Logger(IntentClassifierService.name);
-  private readonly DEFAULT_MODEL = SAKANA_SIMPLE_MODEL;
+  private readonly DEFAULT_MODEL = DEFAULT_SIMPLE_MODEL;
   private readonly DEFAULT_THRESHOLD = 0.85;
 
   constructor(

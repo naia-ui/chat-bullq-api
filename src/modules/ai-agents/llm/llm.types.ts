@@ -62,9 +62,10 @@ export interface LlmCompletionRequest {
   /** Overrides do provedor (top_p, top_k, stop_sequences, thinking, etc). */
   modelParams?: Record<string, unknown>;
   /**
-   * Chave estável de cache de prefixo (ex.: `conv:<conversationId>`). Quando
-   * presente, é enviada como `prompt_cache_key` pra Sakana reaproveitar o
-   * prefixo idêntico (system + histórico) entre turnos da mesma conversa.
+   * Chave estável de cache de prefixo (ex.: `conv:<conversationId>`), pra um
+   * provider reaproveitar o prefixo idêntico (system + histórico) entre
+   * turnos da mesma conversa. Não usado atualmente — nenhum dos providers
+   * ativos (Anthropic, OpenAI) está com prompt caching explícito ligado.
    */
   cacheKey?: string;
 }

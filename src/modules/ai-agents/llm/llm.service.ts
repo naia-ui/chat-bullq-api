@@ -18,8 +18,6 @@ import {
   LlmToolDefinition,
   LlmUsage,
 } from './llm.types';
-import { SAKANA_DEFAULT_BASE_URL } from './llm.constants';
-
 type OpenAiMessage = Record<string, unknown>;
 type OpenAiTool = Record<string, unknown>;
 type OpenAiUsage = {
@@ -35,9 +33,9 @@ type AnthropicMessage = { role: 'user' | 'assistant'; content: AnthropicContentB
 type AnthropicTool = Record<string, unknown>;
 
 /**
- * Cliente LLM normalizado para Sakana Fugu/Fugu Ultra (default) com suporte
- * adicional a Claude/Anthropic direto via API oficial (modelos `anthropic/*`
- * ou `claude-*`).
+ * Cliente LLM normalizado com suporte a Claude/Anthropic (modelos
+ * `anthropic/*` ou `claude-*`) e GPT/OpenAI (modelos `openai/*` ou `gpt-*`)
+ * diretos via API oficial de cada provider.
  *
  * Mantém o contrato público usado pelo runner, classifier, memória, RAG e
  * evals (`complete()`, `LlmMessage`, `LlmToolDefinition`) — o roteamento
@@ -46,32 +44,12 @@ type AnthropicTool = Record<string, unknown>;
 @Injectable()
 export class LlmService {
   private readonly logger = new Logger(LlmService.name);
-  private readonly client: OpenAI;
-  private readonly hasApiKey: boolean;
   private readonly anthropicClient: Anthropic | null;
   private readonly hasAnthropicKey: boolean;
   private readonly openaiDirectClient: OpenAI | null;
   private readonly hasOpenAiDirectKey: boolean;
 
   constructor(config: ConfigService) {
-    const apiKey = config.get<string>('SAKANA_API_KEY');
-    const baseURL =
-      config.get<string>('SAKANA_BASE_URL') ?? SAKANA_DEFAULT_BASE_URL;
-    const timeout = Number(config.get<string>('SAKANA_TIMEOUT_MS') ?? 120_000);
-
-    this.hasApiKey = !!apiKey;
-    if (!apiKey) {
-      this.logger.warn(
-        'SAKANA_API_KEY not set — AI agents will fail at runtime',
-      );
-    }
-
-    this.client = new OpenAI({
-      apiKey: apiKey ?? 'missing',
-      baseURL,
-      timeout: Number.isFinite(timeout) && timeout > 0 ? timeout : 120_000,
-    });
-
     const anthropicApiKey = config.get<string>('ANTHROPIC_API_KEY');
     this.hasAnthropicKey = !!anthropicApiKey;
     this.anthropicClient = anthropicApiKey
@@ -83,11 +61,9 @@ export class LlmService {
       );
     }
 
-    // Reaproveita o mesmo SDK `openai` do client Sakana, mas sem baseURL
-    // custom — vai pro endpoint oficial `api.openai.com`. GPT usa o mesmo
-    // dialeto Chat Completions, então toda a conversão de mensagens/tools
-    // já existente (toOpenAiMessages, toOpenAiTools, fromOpenAiMessage) é
-    // reaproveitada como está.
+    // Client oficial `api.openai.com`. Todas as funções de conversão de
+    // mensagens/tools (toOpenAiMessages, toOpenAiTools, fromOpenAiMessage)
+    // usam o dialeto padrão Chat Completions da OpenAI.
     const openaiDirectApiKey = config.get<string>('OPENAI_API_KEY');
     this.hasOpenAiDirectKey = !!openaiDirectApiKey;
     this.openaiDirectClient = openaiDirectApiKey
@@ -108,7 +84,9 @@ export class LlmService {
     if (this.isOpenAiDirectModel(modelId)) {
       return this.completeOpenAiDirect(req, modelId);
     }
-    return this.completeSakana(req);
+    throw new BadRequestException(
+      `Unsupported LLM model "${modelId}". Use anthropic/claude-* or openai/gpt-*.`,
+    );
   }
 
   private isAnthropicModel(modelId: string): boolean {
@@ -119,105 +97,7 @@ export class LlmService {
     return modelId.startsWith('openai/') || modelId.startsWith('gpt-');
   }
 
-  private async completeSakana(
-    req: LlmCompletionRequest,
-  ): Promise<LlmCompletionResponse> {
-    if (!this.hasApiKey) {
-      throw new InternalServerErrorException('SAKANA_API_KEY not set');
-    }
-
-    const modelId = this.normalizeModelId(req.modelId);
-    const messages = this.toOpenAiMessages(req.messages);
-    const tools = req.tools
-      ? this.toOpenAiTools(this.sanitizeTools(req.tools))
-      : undefined;
-
-    let response: Awaited<
-      ReturnType<OpenAI['chat']['completions']['create']>
-    >;
-
-    try {
-      response = await this.client.chat.completions.create({
-        model: modelId,
-        messages: messages as any,
-        max_tokens: req.maxTokens ?? 2048,
-        temperature: req.temperature ?? 0.7,
-        ...(tools && tools.length > 0 ? { tools: tools as any } : {}),
-        // Prompt caching: prefixo estável (system + histórico) é reaproveitado
-        // entre turnos da mesma conversa. Comprovado ~99% de cache hit no
-        // segundo turno com prefixo idêntico. `prompt_cache_retention` mantém
-        // o cache quente entre mensagens espaçadas do cliente.
-        ...(req.cacheKey
-          ? {
-              prompt_cache_key: req.cacheKey,
-              prompt_cache_retention: '24h',
-            }
-          : {}),
-        ...(this.sanitizeModelParams(req.modelParams) as object),
-      } as any);
-    } catch (err: unknown) {
-      this.handleSakanaError(err, modelId, tools, messages);
-
-      // Rede de segurança: 400 com imagem no payload quase sempre é o
-      // provider não conseguindo baixar/decodificar a URL (arquivo que
-      // sumiu, host fora, formato recusado). Perder a visão de uma imagem
-      // velha é infinitamente melhor que o agente não responder — refaz a
-      // chamada UMA vez só com o texto.
-      const stripped = this.stripImageParts(messages);
-      if ((err as { status?: number })?.status === 400 && stripped) {
-        this.logger.warn(
-          `LLM 400 com imagem no payload — retry sem os image blocks [sakana/${modelId}]`,
-        );
-        try {
-          response = await this.client.chat.completions.create({
-            model: modelId,
-            messages: stripped as any,
-            max_tokens: req.maxTokens ?? 2048,
-            temperature: req.temperature ?? 0.7,
-            ...(tools && tools.length > 0 ? { tools: tools as any } : {}),
-            ...(req.cacheKey
-              ? { prompt_cache_key: req.cacheKey, prompt_cache_retention: '24h' }
-              : {}),
-            ...(this.sanitizeModelParams(req.modelParams) as object),
-          } as any);
-        } catch (retryErr: unknown) {
-          throw new InternalServerErrorException(
-            `LLM provider error: ${this.errorMessage(retryErr)}`,
-          );
-        }
-      } else {
-        throw new InternalServerErrorException(
-          `LLM provider error: ${this.errorMessage(err)}`,
-        );
-      }
-    }
-
-    if ('tee' in response) {
-      throw new InternalServerErrorException('LLM streaming response not supported');
-    }
-
-    const choice = response.choices?.[0];
-    if (!choice?.message) {
-      throw new InternalServerErrorException('LLM provider returned no message');
-    }
-
-    const message = this.fromOpenAiMessage(choice.message as any);
-    const stopReason = this.normalizeStopReason(choice.finish_reason);
-    const usage = this.extractUsage(response.usage as OpenAiUsage | undefined, modelId);
-
-    return {
-      message,
-      stopReason,
-      usage,
-      rawModelId: response.model ?? modelId,
-    };
-  }
-
   // ─── OpenAI direto (modelId `openai/*` ou `gpt-*`) ─────────────────
-  //
-  // Mesmo dialeto Chat Completions do Sakana — só troca o client/endpoint.
-  // Reaproveita toOpenAiMessages/toOpenAiTools/fromOpenAiMessage/
-  // normalizeStopReason/sanitizeModelParams sem alteração.
 
   private async completeOpenAiDirect(
     req: LlmCompletionRequest,
@@ -288,8 +168,8 @@ export class LlmService {
   }
 
   /**
-   * A resposta da OpenAI não traz custo em USD pronto (igual ao Sakana
-   * Fugu simples). Mantemos costUsd=0 em vez de inventar tabela de preço.
+   * A resposta da OpenAI não traz custo em USD pronto. Mantemos costUsd=0
+   * em vez de inventar tabela de preço.
    */
   private extractOpenAiDirectUsage(
     usage: OpenAiUsage | undefined,
@@ -533,9 +413,9 @@ export class LlmService {
   }
 
   /**
-   * A Anthropic não expõe custo em USD na resposta (diferente de alguns
-   * proxies OpenAI-compatible). Mantemos costUsd=0 em vez de inventar tabela
-   * de preço — mesma política aplicada ao Sakana Fugu simples.
+   * A Anthropic não expõe custo em USD na resposta. Mantemos costUsd=0 em
+   * vez de inventar tabela de preço — mesma política aplicada ao provider
+   * OpenAI direto.
    */
   private extractAnthropicUsage(
     usage: Anthropic.Usage | undefined,
@@ -559,37 +439,7 @@ export class LlmService {
     };
   }
 
-  // ─── conversão: nossos tipos → Sakana/OpenAI-compatible ───────────
-
-  /**
-   * Internamente salvamos modelos Sakana com prefixo `sakana/` para ficar
-   * explícito no dashboard. A API recebe só o ID real do modelo.
-   */
-  private normalizeModelId(id: string): string {
-    const trimmed = (id ?? '').trim();
-    if (!trimmed) {
-      throw new BadRequestException('modelId is required');
-    }
-
-    if (
-      trimmed.startsWith('anthropic/') ||
-      trimmed.startsWith('claude-') ||
-      trimmed.startsWith('openai/') ||
-      trimmed.startsWith('google/')
-    ) {
-      throw new BadRequestException(
-        `Unsupported LLM model "${trimmed}". This deployment only uses Sakana models. ` +
-          'Migrate agents to sakana/fugu-ultra-20260615 or sakana/fugu.',
-      );
-    }
-
-    if (trimmed.startsWith('sakana/')) return trimmed.slice('sakana/'.length);
-    if (trimmed === 'fugu' || trimmed.startsWith('fugu-')) return trimmed;
-
-    throw new BadRequestException(
-      `Unsupported Sakana model "${trimmed}". Use sakana/fugu or sakana/fugu-ultra-20260615.`,
-    );
-  }
+  // ─── conversão: nossos tipos → dialeto OpenAI Chat Completions ────
 
   /**
    * Converte nosso array `LlmMessage[]` para o formato Chat Completions:
@@ -692,8 +542,8 @@ export class LlmService {
 
   /**
    * Extrai texto de content parts. O marcador `cache` é mantido no tipo por
-   * compatibilidade com o PromptBuilder, mas não é enviado como `cache_control`
-   * porque a API da Sakana é OpenAI-compatible.
+   * compatibilidade com o PromptBuilder, mas não é enviado como
+   * `cache_control` no dialeto Chat Completions da OpenAI.
    */
   private textOnly(content: LlmContent): string {
     if (typeof content === 'string') return content;
@@ -786,7 +636,7 @@ export class LlmService {
     return out;
   }
 
-  // ─── conversão: Sakana/OpenAI-compatible → nossos tipos ───────────
+  // ─── conversão: dialeto OpenAI Chat Completions → nossos tipos ────
 
   private fromOpenAiMessage(message: {
     content?: string | null;
@@ -858,139 +708,6 @@ export class LlmService {
       default:
         return 'other';
     }
-  }
-
-  private extractUsage(
-    usage: OpenAiUsage | undefined,
-    modelId: string,
-  ): LlmUsage {
-    const input = usage?.prompt_tokens ?? 0;
-    const output = usage?.completion_tokens ?? 0;
-    const cacheRead = usage?.prompt_tokens_details?.cached_tokens ?? 0;
-    const explicitCost = this.findExplicitCost(usage);
-    const costUsd =
-      explicitCost ?? this.calculateCost(modelId, { input, output, cacheRead });
-
-    if (modelId === 'fugu' && explicitCost == null) {
-      this.logger.debug(
-        'sakana_fugu_cost_unavailable — recording tokens with costUsd=0',
-      );
-    }
-
-    return {
-      inputTokens: input,
-      outputTokens: output,
-      cacheReadTokens: cacheRead,
-      cacheWriteTokens: 0,
-      costUsd,
-    };
-  }
-
-  private findExplicitCost(usage: OpenAiUsage | undefined): number | null {
-    if (!usage) return null;
-    const candidates = [
-      usage.cost,
-      usage.cost_usd,
-      usage.total_cost,
-      usage.total_cost_usd,
-    ];
-    for (const c of candidates) {
-      const n = typeof c === 'number' ? c : Number(c);
-      if (Number.isFinite(n) && n >= 0) return n;
-    }
-    return null;
-  }
-
-  /**
-   * Fugu Ultra tem preço fixo público. Fugu simples pode rotear modelos
-   * diferentes; quando a API não retorna custo, mantemos 0 para não inventar.
-   */
-  private calculateCost(
-    modelId: string,
-    tokens: { input: number; output: number; cacheRead: number },
-  ): number {
-    if (modelId !== 'fugu-ultra-20260615' && modelId !== 'fugu-ultra') {
-      return 0;
-    }
-
-    const uncachedInput = Math.max(0, tokens.input - tokens.cacheRead);
-    const longContext = tokens.input > 272_000;
-    const pricing = longContext
-      ? { input: 10, output: 45, cacheRead: 1 }
-      : { input: 5, output: 30, cacheRead: 0.5 };
-
-    return (
-      (uncachedInput * pricing.input +
-        tokens.output * pricing.output +
-        tokens.cacheRead * pricing.cacheRead) /
-      1_000_000
-    );
-  }
-
-  // ─── error handling ──────────────────────────────────────────────
-
-  private handleSakanaError(
-    err: unknown,
-    modelId: string,
-    tools: OpenAiTool[] | undefined,
-    messages: OpenAiMessage[],
-  ): void {
-    const e = err as { status?: number; name?: string; message?: string };
-    const status = e.status;
-    const message = this.errorMessage(err);
-    const toolNames = tools
-      ?.map((t) => ((t.function as Record<string, unknown>)?.name as string) ?? '')
-      .filter(Boolean)
-      .join(',');
-    this.logger.error(
-      `LLM call failed [sakana/${modelId}] status=${status ?? '?'}: ${message} | tools=[${toolNames ?? ''}]`,
-    );
-    if (status === 400) {
-      this.logger.debug(`Messages count: ${messages.length}`);
-      const system = messages.find((m) => m.role === 'system');
-      const sample = typeof system?.content === 'string'
-        ? system.content.slice(0, 600)
-        : '';
-      if (sample) this.logger.debug(`System sample: ${sample}...`);
-      if (tools) {
-        this.logger.debug(
-          `Tools dump: ${safeStringify(tools).slice(0, 4000)}`,
-        );
-      }
-    }
-  }
-
-  /**
-   * Devolve uma cópia das mensagens sem nenhum bloco `image_url` (cada um
-   * vira um marcador textual), ou null quando não havia imagem nenhuma —
-   * nesse caso o retry não faria diferença.
-   */
-  private stripImageParts(messages: OpenAiMessage[]): OpenAiMessage[] | null {
-    let found = false;
-    const out = messages.map((message) => {
-      if (!Array.isArray(message.content)) return message;
-
-      const parts = (message.content as Array<Record<string, unknown>>).map(
-        (part) => {
-          if (part?.type !== 'image_url') return part;
-          found = true;
-          return {
-            type: 'text',
-            text: '[imagem enviada — não foi possível carregar pra eu visualizar]',
-          };
-        },
-      );
-
-      const onlyText = parts.every((p) => p.type === 'text');
-      return {
-        ...message,
-        content: onlyText
-          ? parts.map((p) => String(p.text ?? '')).join('\n')
-          : parts,
-      } as OpenAiMessage;
-    });
-
-    return found ? out : null;
   }
 
   private errorMessage(err: unknown): string {
