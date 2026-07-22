@@ -77,9 +77,9 @@ export interface RagConfig {
   k: number;
   /** Default minimum cosine similarity. */
   minScore: number;
-  /** Whether to run the cheap Fugu reranker after vector search. */
+  /** Whether to run a cheap LLM reranker after vector search. */
   rerankEnabled: boolean;
-  /** Model id for the reranker (Sakana format, e.g. `sakana/fugu`). */
+  /** Model id for the reranker (e.g. `anthropic/claude-haiku-4-5-20251001`). */
   rerankerModel: string;
 }
 
@@ -116,5 +116,5 @@ export const DEFAULT_RAG_CONFIG: RagConfig = {
   k: 5,
   minScore: 0.7,
   rerankEnabled: false,
-  rerankerModel: 'sakana/fugu',
+  rerankerModel: 'anthropic/claude-haiku-4-5-20251001',
 };

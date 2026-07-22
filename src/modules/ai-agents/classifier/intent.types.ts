@@ -47,7 +47,7 @@ export interface ClassificationResult {
   suggestedAgent: string | null;
   /** true quando confidence >= threshold E intent não é AMBIGUOUS/SPAM/ESCALATE. */
   skippedOrchestrator: boolean;
-  /** ID do modelo realmente usado (ex.: 'sakana/fugu'). */
+  /** ID do modelo realmente usado (ex.: 'anthropic/claude-haiku-4-5-20251001'). */
   modelUsed: string;
   /** Custo desta classificação em USD. */
   costUsd: number;
@@ -58,6 +58,6 @@ export interface ClassificationResult {
 export interface ClassifierConfig {
   /** Default 0.85. Abaixo disso → fallback pro orchestrator. */
   threshold: number;
-  /** Default 'sakana/fugu'. */
+  /** Default DEFAULT_SIMPLE_MODEL (anthropic/claude-haiku-4-5-20251001). */
   model: string;
 }

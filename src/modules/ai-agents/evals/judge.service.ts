@@ -1,9 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { LlmService } from '../llm/llm.service';
-import { SAKANA_SIMPLE_MODEL } from '../llm/llm.constants';
+import { DEFAULT_SIMPLE_MODEL } from '../llm/llm.constants';
 import { JudgeVerdict } from './types';
 
-const JUDGE_MODEL = SAKANA_SIMPLE_MODEL;
+const JUDGE_MODEL = DEFAULT_SIMPLE_MODEL;
 
 const JUDGE_SYSTEM_PROMPT = `Você é um juiz imparcial que avalia respostas de agents de IA.
 
@@ -20,7 +20,8 @@ Não inclua nenhum outro texto antes ou depois do JSON.`;
 
 /**
  * LLM-as-judge para asserções subjetivas em evals (tom, clareza, empatia,
- * aderência a um padrão de copy). Usa Sakana Fugu — é barato, rápido e suficiente pro nível de avaliação binária pass/fail.
+ * aderência a um padrão de copy). Usa o modelo barato default (Claude Haiku)
+ * — suficiente pro nível de avaliação binária pass/fail.
  */
 @Injectable()
 export class JudgeService {

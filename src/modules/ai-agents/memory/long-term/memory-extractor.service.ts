@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 import { LlmService } from '../../llm/llm.service';
-import { SAKANA_SIMPLE_MODEL } from '../../llm/llm.constants';
+import { DEFAULT_SIMPLE_MODEL } from '../../llm/llm.constants';
 import {
   ExtractionInput,
   ExtractionResult,
@@ -9,18 +9,18 @@ import {
 } from './long-term.types';
 
 /**
- * Memory extractor — uses cheap Sakana Fugu to read the recent
+ * Memory extractor — uses the cheap default model to read the recent
  * conversation + the current memory and emit:
  *   - `newFacts`: facts that aren't already known
  *   - `factsToRemove`: facts that became stale or contradicted
  *   - `summaryUpdate`: a refreshed 1-paragraph summary (or null)
  *
- * This is the cheap pass we run after every successful agent run. The model is fixed to the cheaper Fugu path because extraction is a structured, low-creativity task and cost scales linearly with conversation volume.
+ * This is the cheap pass we run after every successful agent run. The model is fixed to the cheap path because extraction is a structured, low-creativity task and cost scales linearly with conversation volume.
  */
 @Injectable()
 export class MemoryExtractorService {
   private readonly logger = new Logger(MemoryExtractorService.name);
-  private readonly modelId = SAKANA_SIMPLE_MODEL;
+  private readonly modelId = DEFAULT_SIMPLE_MODEL;
 
   constructor(private readonly llm: LlmService) {}
 
