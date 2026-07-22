@@ -193,3 +193,45 @@ describe('ZappfyMessageMapper — botões e listas', () => {
     );
   });
 });
+
+describe('ZappfyMessageMapper — envio de mídia', () => {
+  const send = (type: any, content: Record<string, any>) =>
+    mapper.denormalize({ type, content } as any, '5521999999999@s.whatsapp.net');
+
+  it('legenda da imagem vai em `text` — em `caption` o provider descarta', () => {
+    const { endpoint, payload } = send('IMAGE', {
+      mediaUrl: 'https://app/foto.jpg',
+      caption: 'olha isso',
+    });
+
+    expect(endpoint).toBe('/send/media');
+    expect(payload.text).toBe('olha isso');
+    expect(payload.caption).toBeUndefined();
+  });
+
+  it('vídeo segue a mesma regra da imagem', () => {
+    const { payload } = send('VIDEO', {
+      mediaUrl: 'https://app/v.mp4',
+      caption: 'assiste',
+    });
+    expect(payload.text).toBe('assiste');
+    expect(payload.caption).toBeUndefined();
+  });
+
+  it('documento leva nome em `docName` e legenda em `text`', () => {
+    const { payload } = send('DOCUMENT', {
+      mediaUrl: 'https://app/arquivo.pdf',
+      fileName: 'contrato-assinado.pdf',
+      caption: 'segue o contrato',
+    });
+
+    expect(payload.docName).toBe('contrato-assinado.pdf');
+    expect(payload.text).toBe('segue o contrato');
+    expect(payload.filename).toBeUndefined();
+  });
+
+  it('mídia sem legenda não inventa texto', () => {
+    const { payload } = send('IMAGE', { mediaUrl: 'https://app/foto.jpg' });
+    expect(payload.text).toBe('');
+  });
+});

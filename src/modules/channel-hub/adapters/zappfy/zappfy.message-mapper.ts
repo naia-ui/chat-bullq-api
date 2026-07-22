@@ -241,14 +241,17 @@ export class ZappfyMessageMapper {
           payload: withExtras({ number, text: message.content.text, delay: 1000 }),
         };
 
+      // A legenda da mídia vai no campo `text` — `caption` o provider aceita
+      // sem reclamar e simplesmente descarta, que era por que a imagem
+      // chegava sempre muda no WhatsApp do cliente.
       case MessageContentType.IMAGE:
         return {
           endpoint: '/send/media',
-          payload: withReply({
+          payload: withExtras({
             number,
             file: message.content.mediaUrl,
             type: 'image',
-            caption: message.content.caption || '',
+            text: message.content.caption || '',
           }),
         };
 
@@ -268,23 +271,25 @@ export class ZappfyMessageMapper {
       case MessageContentType.VIDEO:
         return {
           endpoint: '/send/media',
-          payload: withReply({
+          payload: withExtras({
             number,
             file: message.content.mediaUrl,
             type: 'video',
-            caption: message.content.caption || '',
+            text: message.content.caption || '',
           }),
         };
 
       case MessageContentType.DOCUMENT:
         return {
           endpoint: '/send/media',
-          payload: withReply({
+          payload: withExtras({
             number,
             file: message.content.mediaUrl,
             type: 'document',
-            filename: message.content.fileName || '',
-            caption: message.content.caption || '',
+            // `docName`, não `filename`: com o nome errado o provider ignora
+            // e o documento chega com o nome interno do nosso upload.
+            docName: message.content.fileName || '',
+            text: message.content.caption || '',
           }),
         };
 
