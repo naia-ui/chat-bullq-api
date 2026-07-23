@@ -1,33 +1,26 @@
 /**
  * Tipos canônicos do Intent Classifier.
  *
- * O classifier roda ANTES do orchestrator (Augusto) e usa Fugu pra decidir
- * qual worker chamar quando dá pra ter certeza. Isso economiza ~40% de custo
- * + ~1.5s de latência em mensagens onde o roteamento é óbvio.
+ * O classifier roda ANTES do fallback (orquestrador, quando existir um pro
+ * canal) e usa o modelo barato pra decidir qual agente chamar quando dá pra
+ * ter certeza. Isso economiza custo + latência em mensagens onde o
+ * roteamento é óbvio.
  *
  * Mensagens com intent ambíguo, small talk, spam ou pedido de escalação caem
- * de volta no orchestrator (skippedOrchestrator=false), que continua sendo
+ * de volta no fallback (skippedOrchestrator=false), que continua sendo
  * o caminho seguro pra qualquer coisa fora-da-curva.
  */
 
 export enum IntentType {
-  /** Curso de marketing/tráfego/copy → Daniel Souza */
-  SALES_GENERAL = 'SALES_GENERAL',
-  /** Dono de contabilidade procurando solução → André Silva */
-  SALES_ACCOUNTING = 'SALES_ACCOUNTING',
-  /** Advogado / banca jurídica → Bruno Costa */
-  SALES_LEGAL = 'SALES_LEGAL',
-  /** Cliente já comprou e precisa de ajuda → Lívia Andrade */
-  SUPPORT = 'SUPPORT',
-  /** Cliente em projeto de implementação (ClickUp/automações/reuniões) → Sofia Almeida */
-  IMPLEMENTATION = 'IMPLEMENTATION',
-  /** Oi/bom dia/agradecimento → Augusto responde direto */
+  /** Relato de problema jurídico ou pedido de atendimento → agente de triagem (ex.: Justine Trabalhista) */
+  LEGAL_MATTER = 'LEGAL_MATTER',
+  /** Oi/bom dia/agradecimento — sem pedido claro ainda */
   SMALL_TALK = 'SMALL_TALK',
-  /** Não dá pra decidir → Augusto resolve */
+  /** Não dá pra decidir → cai no fallback */
   AMBIGUOUS = 'AMBIGUOUS',
-  /** Spam, áudio sem transcrição, link suspeito → Augusto decide ação */
+  /** Spam de verdade: propaganda, link suspeito, mensagem sem sentido — NUNCA uma saudação simples */
   SPAM_OR_NOISE = 'SPAM_OR_NOISE',
-  /** Cliente irritado/ameaça/situação grave → transfere pra humano */
+  /** Cliente irritado/ameaça/reclamação grave/mídia → prioriza humano */
   ESCALATE_HUMAN = 'ESCALATE_HUMAN',
 }
 
@@ -43,7 +36,7 @@ export interface ClassificationResult {
   confidence: number;
   /** Explicação curta do Fugu — útil pra debug e auditoria. */
   reasoning: string;
-  /** Ex.: 'Daniel Souza' — null quando o intent vai pro Augusto. */
+  /** Nome do agente resolvido pelo IntentRouterService, ou null quando cai no fallback. */
   suggestedAgent: string | null;
   /** true quando confidence >= threshold E intent não é AMBIGUOUS/SPAM/ESCALATE. */
   skippedOrchestrator: boolean;
