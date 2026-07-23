@@ -3,11 +3,17 @@ import { IntentType } from './intent.types';
 
 /**
  * Mapeia um intent classificado pro nome do agente que deve atender e diz
- * se o orchestrator (Augusto) pode ser pulado.
+ * se o fallback (orquestrador, ou qualquer agente ativo do canal na
+ * ausência de um) pode ser pulado.
  *
  * Decisão de "skip" é binária aqui — o threshold de confidence é aplicado
  * pelo IntentClassifierService antes de gerar o ClassificationResult final.
  * Esse service é puro lookup.
+ *
+ * `agentName` só importa de verdade quando `skip: true` (o AgentRouterService
+ * busca um agente ativo com esse nome exato pra pular direto pro worker).
+ * Nos demais casos o fallback resolve pra qualquer agente AUTONOMOUS ativo
+ * do canal, então o nome aqui é só documentação.
  */
 @Injectable()
 export class IntentRouterService {
@@ -15,16 +21,11 @@ export class IntentRouterService {
     IntentType,
     { agentName: string; skip: boolean }
   > = {
-    [IntentType.SALES_GENERAL]: { agentName: 'Daniel Souza', skip: true },
-    [IntentType.SALES_ACCOUNTING]: { agentName: 'André Silva', skip: true },
-    [IntentType.SALES_LEGAL]: { agentName: 'Bruno Costa', skip: true },
-    [IntentType.SUPPORT]: { agentName: 'Lívia Andrade', skip: true },
-    [IntentType.IMPLEMENTATION]: { agentName: 'Sofia Almeida', skip: true },
-    // Augusto cuida — orchestrator decide a próxima jogada.
-    [IntentType.SMALL_TALK]: { agentName: 'Augusto Mendes', skip: false },
-    [IntentType.AMBIGUOUS]: { agentName: 'Augusto Mendes', skip: false },
-    [IntentType.SPAM_OR_NOISE]: { agentName: 'Augusto Mendes', skip: false },
-    [IntentType.ESCALATE_HUMAN]: { agentName: 'Augusto Mendes', skip: false },
+    [IntentType.LEGAL_MATTER]: { agentName: 'Justine Trabalhista', skip: true },
+    [IntentType.SMALL_TALK]: { agentName: 'Justine Trabalhista', skip: false },
+    [IntentType.AMBIGUOUS]: { agentName: 'Justine Trabalhista', skip: false },
+    [IntentType.SPAM_OR_NOISE]: { agentName: 'Justine Trabalhista', skip: false },
+    [IntentType.ESCALATE_HUMAN]: { agentName: 'Justine Trabalhista', skip: false },
   };
 
   routeIntent(intent: IntentType): {
