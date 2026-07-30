@@ -1,6 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { ChannelType } from '@prisma/client';
+import { PrismaService } from '../../../../database/prisma.service';
 import { RealtimeGateway } from '../../../realtime/realtime.gateway';
 import { PendingActionService } from '../../confirmations/pending-action.service';
+import { ZappfyHttpClient } from '../../../channel-hub/adapters/zappfy/zappfy.http-client';
 import { AiTool, ToolContext, ToolResult } from '../tool.types';
 
 /**
@@ -13,6 +17,11 @@ import { AiTool, ToolContext, ToolResult } from '../tool.types';
  * pro LLM. Quando aprovada, o executor da fase 2 faz o pause/handoff de
  * verdade. Mantemos a notificação imediata pro operador (via realtime)
  * pra ele revisar a fila de pendências sem demora.
+ *
+ * Além do realtime (só visível com o painel aberto), manda um alerta de
+ * WhatsApp best-effort pro número configurado em `LEGAL_HANDOFF_WHATSAPP_NUMBER`
+ * — pra alguém saber que precisa entrar no painel mesmo longe do computador.
+ * Falha nesse envio nunca derruba o handoff em si (só loga um warning).
  */
 @Injectable()
 export class TransferToHumanTool implements AiTool {
@@ -45,6 +54,9 @@ export class TransferToHumanTool implements AiTool {
   constructor(
     private readonly realtime: RealtimeGateway,
     private readonly pendingActions: PendingActionService,
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
+    private readonly zappfyHttpClient: ZappfyHttpClient,
   ) {}
 
   async execute(
@@ -94,6 +106,8 @@ export class TransferToHumanTool implements AiTool {
       `Agent ${ctx.agentId} requested handoff for conv ${ctx.conversationId} → pendingAction=${action.id} (reason="${reason}")`,
     );
 
+    await this.sendWhatsappAlert(ctx, reason, summary);
+
     return {
       output: {
         ok: true,
@@ -110,5 +124,62 @@ export class TransferToHumanTool implements AiTool {
       // se tivesse transferido de fato.
       finalAction: 'TRANSFERRED_TO_HUMAN',
     };
+  }
+
+  /**
+   * Alerta best-effort de WhatsApp pro time jurídico. Só roda se
+   * `LEGAL_HANDOFF_WHATSAPP_NUMBER` estiver configurado e o canal da
+   * conversa for Zappfy (única forma de envio implementada hoje). Qualquer
+   * falha aqui é só logada — nunca deve derrubar o handoff em si.
+   */
+  private async sendWhatsappAlert(
+    ctx: ToolContext,
+    reason: string,
+    summary: string | null,
+  ): Promise<void> {
+    const alertNumber = this.config.get<string>('LEGAL_HANDOFF_WHATSAPP_NUMBER');
+    if (!alertNumber) return;
+
+    try {
+      const channel = await this.prisma.channel.findUnique({
+        where: { id: ctx.channelId },
+      });
+      if (!channel || channel.type !== ChannelType.WHATSAPP_ZAPPFY) {
+        this.logger.debug(
+          `Skipping WhatsApp handoff alert — channel ${ctx.channelId} is not WHATSAPP_ZAPPFY`,
+        );
+        return;
+      }
+
+      const contact = await this.prisma.contact.findUnique({
+        where: { id: ctx.contactId },
+        select: { name: true, phone: true },
+      });
+
+      const appUrl = this.config.get<string>('APP_URL') ?? '';
+      const webUrl = appUrl.includes('api.') ? appUrl.replace('api.', 'app.') : appUrl;
+      const link = webUrl
+        ? `${webUrl}/inbox?conversationId=${ctx.conversationId}`
+        : ctx.conversationId;
+
+      const contactLabel = contact?.name || contact?.phone || 'cliente';
+      const lines = [
+        'Transferência solicitada pela Justine.',
+        `Cliente: ${contactLabel}`,
+        `Motivo: ${reason}`,
+        ...(summary ? [`Resumo: ${summary}`] : []),
+        `Abrir conversa: ${link}`,
+      ];
+
+      await this.zappfyHttpClient.sendRequest(channel, '/send/text', {
+        number: alertNumber,
+        text: lines.join('\n'),
+        delay: 1000,
+      });
+    } catch (err: any) {
+      this.logger.warn(
+        `Failed to send WhatsApp handoff alert to ${alertNumber}: ${err?.message ?? err}`,
+      );
+    }
   }
 }

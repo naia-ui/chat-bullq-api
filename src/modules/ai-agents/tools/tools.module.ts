@@ -1,5 +1,6 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
+import { ZappfyModule } from '../../channel-hub/adapters/zappfy/zappfy.module';
 import { PrismaModule } from '../../../database/prisma.module';
 import { RealtimeModule } from '../../realtime/realtime.module';
 import { ReplyToConversationTool } from './builtin/reply-to-conversation.tool';
@@ -38,6 +39,7 @@ import { SalesRecoveryModule } from '../../sales-recovery/sales-recovery.module'
     RealtimeModule,
     ConfirmationsModule,
     SalesRecoveryModule,
+    forwardRef(() => ZappfyModule),
     BullModule.registerQueue({ name: 'outbound-messages' }),
   ],
   providers: [
