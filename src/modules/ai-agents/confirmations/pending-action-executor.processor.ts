@@ -132,11 +132,91 @@ export class PendingActionExecutorProcessor extends WorkerHost {
       where: { id: action.conversationId },
       data: { aiEnabled: false },
     });
+
+    await this.upsertHandoffCard(action.conversationId, action.args);
+
     return {
       ok: true,
       transferredAt: new Date().toISOString(),
       reason: action.args?.reason ?? null,
     };
+  }
+
+  /**
+   * Best-effort: joga a conversa no card do pipeline padrão da org, na
+   * etapa "Aguardando advogada" — cria se não existir card OPEN pro
+   * contato nesse pipeline, ou só move se já existir (evita duplicar card
+   * a cada novo handoff da mesma conversa). Nunca deve derrubar o handoff
+   * em si — qualquer erro aqui só é logado.
+   */
+  private async upsertHandoffCard(
+    conversationId: string,
+    args: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      const conversation = await this.prisma.conversation.findUnique({
+        where: { id: conversationId },
+        select: { organizationId: true, contactId: true },
+      });
+      if (!conversation) return;
+
+      const pipeline = await this.prisma.pipeline.findFirst({
+        where: {
+          organizationId: conversation.organizationId,
+          isDefault: true,
+          archived: false,
+        },
+        include: { stages: true },
+      });
+      if (!pipeline) return;
+
+      const stage =
+        pipeline.stages.find((s) => s.name === 'Aguardando advogada') ??
+        pipeline.stages.find((s) => s.type === 'NORMAL');
+      if (!stage) return;
+
+      const existing = await this.prisma.card.findFirst({
+        where: {
+          organizationId: conversation.organizationId,
+          pipelineId: pipeline.id,
+          contactId: conversation.contactId,
+          status: 'OPEN',
+        },
+      });
+
+      if (existing) {
+        await this.prisma.card.update({
+          where: { id: existing.id },
+          data: { stageId: stage.id, conversationId },
+        });
+        return;
+      }
+
+      const contact = await this.prisma.contact.findUnique({
+        where: { id: conversation.contactId },
+        select: { name: true, phone: true },
+      });
+      const title = contact?.name || contact?.phone || 'Novo contato';
+      const reason = typeof args?.reason === 'string' ? args.reason : null;
+
+      await this.prisma.card.create({
+        data: {
+          organizationId: conversation.organizationId,
+          pipelineId: pipeline.id,
+          stageId: stage.id,
+          title,
+          description: reason,
+          contactId: conversation.contactId,
+          conversationId,
+          status: 'OPEN',
+          metadata: { createdBy: 'transferToHuman' },
+        },
+      });
+    } catch (err: any) {
+      this.logger.warn(
+        `Failed to create/move handoff pipeline card for conversation ${conversationId}: ${err?.message ?? err}`,
+      );
+    }
   }
 
   private async executeHttpSkill(action: {
