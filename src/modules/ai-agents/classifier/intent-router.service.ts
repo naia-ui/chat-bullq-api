@@ -21,11 +21,11 @@ export class IntentRouterService {
     IntentType,
     { agentName: string; skip: boolean }
   > = {
-    [IntentType.LEGAL_MATTER]: { agentName: 'Justine Trabalhista', skip: true },
-    [IntentType.SMALL_TALK]: { agentName: 'Justine Trabalhista', skip: false },
-    [IntentType.AMBIGUOUS]: { agentName: 'Justine Trabalhista', skip: false },
-    [IntentType.SPAM_OR_NOISE]: { agentName: 'Justine Trabalhista', skip: false },
-    [IntentType.ESCALATE_HUMAN]: { agentName: 'Justine Trabalhista', skip: false },
+    [IntentType.LEGAL_MATTER]: { agentName: 'Justine', skip: true },
+    [IntentType.SMALL_TALK]: { agentName: 'Justine', skip: false },
+    [IntentType.AMBIGUOUS]: { agentName: 'Justine', skip: false },
+    [IntentType.SPAM_OR_NOISE]: { agentName: 'Justine', skip: false },
+    [IntentType.ESCALATE_HUMAN]: { agentName: 'Justine', skip: false },
   };
 
   routeIntent(intent: IntentType): {
