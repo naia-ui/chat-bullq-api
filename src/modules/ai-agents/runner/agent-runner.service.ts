@@ -271,7 +271,7 @@ export class AiAgentRunnerService {
     let finalAction: AiFinalAction = AiFinalAction.NO_ACTION;
     let iterationCount = 0;
     const toolsCalled = new Set<string>();
-    let salesNudgeUsed = false;
+    let noReplyNudgeUsed = false;
 
     // Roteamento de modelo (fugu por padrão, fugu-ultra só na síntese de
     // workers). Iterações de ferramenta são mecânicas → modelo barato. A
@@ -394,30 +394,28 @@ export class AiAgentRunnerService {
             );
           }
 
-          // Sales-prep nudge: agent gathered offer info + purchase status
-          // but never sent a reply — classic "thought-but-didn't-speak"
-          // failure that leaves the customer hanging. Inject one synthetic
-          // user reminder and re-iterate. Bounded by salesNudgeUsed to
-          // avoid loops if the model still refuses.
-          const calledSalesPrep = [...SALES_PREP_TOOLS].some((t) =>
-            toolsCalled.has(t),
-          );
+          // Never-replied nudge: turn is about to end with no reply and no
+          // handoff (no transfer/close/delegate/hand-back) — e.g. the agent
+          // only called tagConversation then went silent. Classic
+          // "thought-but-didn't-speak" failure that leaves the customer
+          // hanging with zero visible response and zero error logged.
+          // Inject one synthetic user reminder and re-iterate. Bounded by
+          // noReplyNudgeUsed to avoid loops if the model still refuses.
           const neverReplied = !toolsCalled.has('replyToConversation');
           const stillNoAction = finalAction === AiFinalAction.NO_ACTION;
-          if (
-            calledSalesPrep &&
-            neverReplied &&
-            stillNoAction &&
-            !salesNudgeUsed
-          ) {
-            salesNudgeUsed = true;
+          if (neverReplied && stillNoAction && !noReplyNudgeUsed) {
+            noReplyNudgeUsed = true;
+            const calledSalesPrep = [...SALES_PREP_TOOLS].some((t) =>
+              toolsCalled.has(t),
+            );
             this.logger.warn(
-              `Run ${run.id}: sales-prep tools ran but no replyToConversation — nudging model for one more turn`,
+              `Run ${run.id}: turn ended without replyToConversation or handoff (toolsCalled=[${[...toolsCalled].join(',')}]) — nudging model for one more turn`,
             );
             messages.push({
               role: 'user',
-              content:
-                'Você rodou as tools de preparação (lookupOffering / checkPurchase) mas não chamou replyToConversation. O cliente está esperando. Responda agora com replyToConversation: 1 frase de pitch ligada à dor + preço + link do checkout (vindos do lookupOffering). Não termine este turn sem chamar replyToConversation.',
+              content: calledSalesPrep
+                ? 'Você rodou as tools de preparação (lookupOffering / checkPurchase) mas não chamou replyToConversation. O cliente está esperando. Responda agora com replyToConversation: 1 frase de pitch ligada à dor + preço + link do checkout (vindos do lookupOffering). Não termine este turn sem chamar replyToConversation.'
+                : 'Você terminou o turno sem chamar replyToConversation, transferToHuman ou delegateToAgent. O cliente está esperando uma resposta. Responda agora chamando replyToConversation com uma mensagem para o cliente.',
             });
             continue;
           }

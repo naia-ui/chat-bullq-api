@@ -11,6 +11,7 @@ import { InstagramContactEnricherService } from '../../channel-hub/adapters/inst
 import { ZappfyContactEnricherService } from '../../channel-hub/adapters/zappfy/zappfy-contact-enricher.service';
 import { WebhookEventsService } from '../../channel-hub/webhook-events.service';
 import { AgentRouterService } from '../../ai-agents/router/agent-router.service';
+import { OutOfHoursReplyService } from '../../ai-agents/router/out-of-hours-reply.service';
 import { AiAgentRunnerService } from '../../ai-agents/runner/agent-runner.service';
 import { TranscriptionService } from '../messages/transcription.service';
 import { OutboxService } from '../../automations/outbox/outbox.service';
@@ -93,6 +94,7 @@ export class InboundMessageProcessor extends WorkerHost {
     private readonly zappfyEnricher: ZappfyContactEnricherService,
     private readonly webhookEvents: WebhookEventsService,
     private readonly agentRouter: AgentRouterService,
+    private readonly outOfHoursReply: OutOfHoursReplyService,
     private readonly agentRunner: AiAgentRunnerService,
     private readonly transcription: TranscriptionService,
     private readonly outbox: OutboxService,
@@ -560,6 +562,15 @@ export class InboundMessageProcessor extends WorkerHost {
       this.logger.debug(
         `AI skipped for conv ${conversationId}: ${decision.reason}`,
       );
+      if (decision.reason === 'outside-business-hours') {
+        this.outOfHoursReply
+          .maybeReply(conversation)
+          .catch((err) =>
+            this.logger.warn(
+              `Out-of-hours reply failed for conv ${conversationId}: ${err?.message ?? err}`,
+            ),
+          );
+      }
       return;
     }
 
@@ -638,6 +649,15 @@ export class InboundMessageProcessor extends WorkerHost {
         this.logger.debug(
           `AI skipped after debounce for conv ${conversationId}: ${decision.reason}`,
         );
+        if (decision.reason === 'outside-business-hours') {
+          this.outOfHoursReply
+            .maybeReply(conv)
+            .catch((err) =>
+              this.logger.warn(
+                `Out-of-hours reply failed for conv ${conversationId}: ${err?.message ?? err}`,
+              ),
+            );
+        }
         return;
       }
 

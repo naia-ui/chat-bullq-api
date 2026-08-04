@@ -10,6 +10,7 @@ import { PrismaService } from '../../../database/prisma.service';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { AiAgentRunnerService } from '../../ai-agents/runner/agent-runner.service';
 import { AgentRouterService } from '../../ai-agents/router/agent-router.service';
+import { OutOfHoursReplyService } from '../../ai-agents/router/out-of-hours-reply.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
 import { WatchdogConfigService } from './watchdog-config.service';
 import { WatchdogCronService } from './watchdog-cron.service';
@@ -45,6 +46,7 @@ export class WatchdogTimerProcessor extends WorkerHost {
     private readonly notifications: NotificationsService,
     private readonly agentRunner: AiAgentRunnerService,
     private readonly agentRouter: AgentRouterService,
+    private readonly outOfHoursReply: OutOfHoursReplyService,
     private readonly realtime: RealtimeGateway,
     @Inject(forwardRef(() => WatchdogCronService))
     private readonly cron: WatchdogCronService,
@@ -84,7 +86,15 @@ export class WatchdogTimerProcessor extends WorkerHost {
     if (!this.config.isWithinBusinessHours(conversation.organization)) {
       // Reagenda pra quando voltar ao horário? Não — mantém simples e deixa
       // a próxima inbound ou o cron de fallback re-agendar. Watchdog fora
-      // de horário só não atua, não acumula divida.
+      // de horário só não atua, não acumula divida. Ainda assim avisa o
+      // cliente (dedupe interno evita repetir se já avisou antes).
+      await this.outOfHoursReply
+        .maybeReply(conversation)
+        .catch((err) =>
+          this.logger.warn(
+            `Out-of-hours reply failed for conv ${conversationId}: ${err?.message ?? err}`,
+          ),
+        );
       await this.clearJobId(conversationId);
       return { skipped: true, reason: 'outside_business_hours' };
     }

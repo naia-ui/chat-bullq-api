@@ -1,5 +1,6 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { BullModule } from '@nestjs/bullmq';
 import { PrismaModule } from '../../database/prisma.module';
 import { LlmModule } from './llm/llm.module';
 import { ToolsModule } from './tools/tools.module';
@@ -13,6 +14,7 @@ import { AgentRunJanitorService } from './runner/agent-run-janitor.service';
 import { CatalogSyncService } from './runner/catalog-sync.service';
 import { MediaUrlResolverService } from './runner/media-url-resolver.service';
 import { AgentRouterService } from './router/agent-router.service';
+import { OutOfHoursReplyService } from './router/out-of-hours-reply.service';
 import { AgentsService } from './agents/agents.service';
 import { AgentsController } from './agents/agents.controller';
 import { ToolsCatalogService } from './catalog/tools.service';
@@ -46,6 +48,7 @@ import { EvalsModule } from './evals/evals.module';
     ConfirmationExecutorModule,
     RagModule,
     EvalsModule,
+    BullModule.registerQueue({ name: 'outbound-messages' }),
   ],
   controllers: [AgentsController, AiCatalogController],
   providers: [
@@ -54,12 +57,13 @@ import { EvalsModule } from './evals/evals.module';
     ModelRouterService,
     AgentRunJanitorService,
     AgentRouterService,
+    OutOfHoursReplyService,
     AgentsService,
     ToolsCatalogService,
     SkillsCatalogService,
     CatalogSyncService,
     MediaUrlResolverService,
   ],
-  exports: [AiAgentRunnerService, AgentRouterService],
+  exports: [AiAgentRunnerService, AgentRouterService, OutOfHoursReplyService],
 })
 export class AiAgentsModule {}
