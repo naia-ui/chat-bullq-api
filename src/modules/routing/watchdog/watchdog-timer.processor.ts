@@ -201,6 +201,19 @@ export class WatchdogTimerProcessor extends WorkerHost {
       this.logger.warn(
         `Watchdog wanted to rerun AI but router blocked: conv=${conversationId} reason=${decision.reason}`,
       );
+      // O router usa `org.aiBusinessHours` (pode divergir do
+      // `watchdogBusinessHours` checado acima) — se foi esse o motivo,
+      // ainda vale mandar o aviso de fora de horário (dedupe interno
+      // evita repetir se o inbound original já mandou).
+      if (decision.reason === 'outside-business-hours') {
+        await this.outOfHoursReply
+          .maybeReply(fresh)
+          .catch((err) =>
+            this.logger.warn(
+              `Out-of-hours reply failed for conv ${conversationId}: ${err?.message ?? err}`,
+            ),
+          );
+      }
       return { skipped: true, reason: `router_${decision.reason}` };
     }
 
