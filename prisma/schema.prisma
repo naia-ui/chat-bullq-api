@@ -965,6 +965,12 @@ model AiAgent {
   canRespondDirectly Boolean @default(true) @map("can_respond_directly")
   isActive           Boolean @default(true) @map("is_active")
 
+  // Pipeline de CASO pra onde vai o card quando esse agente transfere a
+  // conversa pra um humano (transferToHuman) — ex: agente "Justine
+  // Trabalhista" → pipeline "Atendimento Trabalhista". Null = usa o
+  // pipeline padrão da org (funil de leads) como fallback.
+  pipelineId String? @map("pipeline_id")
+
   // ─── Follow-up automation ──────────────────────────────────
   // Quando este agent envia uma mensagem e o cliente não responde, o
   // sistema agenda follow-ups automáticos seguindo essa cadência (em horas).
@@ -978,6 +984,7 @@ model AiAgent {
   deletedAt DateTime? @map("deleted_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  pipeline     Pipeline?    @relation("AgentCasePipeline", fields: [pipelineId], references: [id], onDelete: SetNull)
 
   channels       AiAgentChannel[]
   memories       AiAgentMemory[]
@@ -992,6 +999,7 @@ model AiAgent {
   @@index([organizationId, kind], name: "idx_ai_agent_org_kind")
   @@index([parentAgentId], name: "idx_ai_agent_parent")
   @@index([organizationId, department], name: "idx_ai_agent_org_dept")
+  @@index([pipelineId], name: "idx_ai_agent_pipeline")
   @@map("ai_agents")
 }
 
@@ -1396,6 +1404,7 @@ model Pipeline {
   organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   stages       PipelineStage[]
   cards        Card[]
+  agents       AiAgent[]       @relation("AgentCasePipeline")
 
   @@unique([organizationId, key], name: "uq_pipeline_org_key")
   @@index([organizationId, archived])

@@ -123,6 +123,7 @@ export class PendingActionExecutorProcessor extends WorkerHost {
 
   private async executeTransferToHuman(action: {
     conversationId: string;
+    agentId: string;
     args: Record<string, unknown>;
   }): Promise<unknown> {
     // Pausa a IA na conversa + sinaliza que aguarda atendente humano.
@@ -133,7 +134,11 @@ export class PendingActionExecutorProcessor extends WorkerHost {
       data: { aiEnabled: false },
     });
 
-    await this.upsertHandoffCard(action.conversationId, action.args);
+    await this.upsertHandoffCard(
+      action.conversationId,
+      action.agentId,
+      action.args,
+    );
 
     return {
       ok: true,
@@ -143,14 +148,23 @@ export class PendingActionExecutorProcessor extends WorkerHost {
   }
 
   /**
-   * Best-effort: joga a conversa no card do pipeline padrão da org, na
-   * etapa "Aguardando advogada" — cria se não existir card OPEN pro
-   * contato nesse pipeline, ou só move se já existir (evita duplicar card
-   * a cada novo handoff da mesma conversa). Nunca deve derrubar o handoff
-   * em si — qualquer erro aqui só é logado.
+   * Handoff pra humano dispara DOIS efeitos no kanban:
+   *
+   *  1. Se existe um card OPEN no funil de leads (pipeline `isDefault`) pra
+   *     esse contato, avança pra etapa de qualificação (WON) — o lead
+   *     "se formou" em caso.
+   *  2. Cria/move o card no pipeline de CASO da área (`aiAgent.pipelineId`
+   *     do agente que pediu o handoff). Sem pipeline mapeado pro agente,
+   *     cai de volta no funil de leads (comportamento antigo, pré-multi-
+   *     pipeline) — nunca perde o card por falta de mapeamento.
+   *
+   * Best-effort nos dois passos — nunca deve derrubar o handoff em si,
+   * qualquer erro aqui só é logado. Idempotente: repetir o handoff da
+   * mesma conversa só move os cards existentes, não duplica.
    */
   private async upsertHandoffCard(
     conversationId: string,
+    agentId: string,
     args: Record<string, unknown>,
   ): Promise<void> {
     try {
@@ -160,7 +174,7 @@ export class PendingActionExecutorProcessor extends WorkerHost {
       });
       if (!conversation) return;
 
-      const pipeline = await this.prisma.pipeline.findFirst({
+      const leadsPipeline = await this.prisma.pipeline.findFirst({
         where: {
           organizationId: conversation.organizationId,
           isDefault: true,
@@ -168,17 +182,59 @@ export class PendingActionExecutorProcessor extends WorkerHost {
         },
         include: { stages: true },
       });
-      if (!pipeline) return;
 
-      const stage =
-        pipeline.stages.find((s) => s.name === 'Aguardando advogada') ??
-        pipeline.stages.find((s) => s.type === 'NORMAL');
+      // Passo 1: avança o card de lead (se existir) pra etapa de
+      // qualificação — primeiro stage WON do funil de leads.
+      if (leadsPipeline) {
+        const qualifiedStage = leadsPipeline.stages.find(
+          (s) => s.type === 'WON',
+        );
+        if (qualifiedStage) {
+          await this.prisma.card
+            .updateMany({
+              where: {
+                organizationId: conversation.organizationId,
+                pipelineId: leadsPipeline.id,
+                contactId: conversation.contactId,
+                status: 'OPEN',
+              },
+              data: { stageId: qualifiedStage.id },
+            })
+            .catch((err) =>
+              this.logger.warn(
+                `Failed to advance leads card for conv ${conversationId}: ${err?.message ?? err}`,
+              ),
+            );
+        }
+      }
+
+      // Passo 2: pipeline de caso da área — vem do agente que transferiu.
+      // Sem mapeamento, cai no funil de leads (comportamento pré-existente).
+      const agent = await this.prisma.aiAgent.findUnique({
+        where: { id: agentId },
+        select: { pipelineId: true },
+      });
+      const casePipeline = agent?.pipelineId
+        ? await this.prisma.pipeline.findFirst({
+            where: {
+              id: agent.pipelineId,
+              organizationId: conversation.organizationId,
+              archived: false,
+            },
+            include: { stages: true },
+          })
+        : leadsPipeline;
+      if (!casePipeline) return;
+
+      const stage = casePipeline.stages
+        .filter((s) => s.type === 'NORMAL')
+        .sort((a, b) => a.order - b.order)[0];
       if (!stage) return;
 
       const existing = await this.prisma.card.findFirst({
         where: {
           organizationId: conversation.organizationId,
-          pipelineId: pipeline.id,
+          pipelineId: casePipeline.id,
           contactId: conversation.contactId,
           status: 'OPEN',
         },
@@ -202,7 +258,7 @@ export class PendingActionExecutorProcessor extends WorkerHost {
       await this.prisma.card.create({
         data: {
           organizationId: conversation.organizationId,
-          pipelineId: pipeline.id,
+          pipelineId: casePipeline.id,
           stageId: stage.id,
           title,
           description: reason,

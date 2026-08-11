@@ -173,7 +173,11 @@ export class InboundMessageProcessor extends WorkerHost {
         }
       }
 
-      const { conversationId, status } = await this.conversationResolver.resolve(
+      const {
+        conversationId,
+        status,
+        isNew: isNewConversation,
+      } = await this.conversationResolver.resolve(
         organizationId,
         channelId,
         contactId,
@@ -192,6 +196,18 @@ export class InboundMessageProcessor extends WorkerHost {
       const direction = isEcho
         ? MessageDirection.OUTBOUND
         : MessageDirection.INBOUND;
+
+      // Conversa genuinamente nova + mensagem real do cliente (não eco, não
+      // grupo) → entra automaticamente no funil de leads, etapa "Novo lead".
+      // Fire-and-forget: nunca deve travar o pipeline de ingestão.
+      if (isNewConversation && !isEcho && !message.isGroup) {
+        this.createLeadCard(organizationId, conversationId, contactId).catch(
+          (err) =>
+            this.logger.warn(
+              `Failed to create lead card for conv ${conversationId}: ${err?.message ?? err}`,
+            ),
+        );
+      }
 
       // Wrap the message persist + outbox emit + lastMessageAt in a single
       // TX so the automation engine can never observe a message that
@@ -531,6 +547,55 @@ export class InboundMessageProcessor extends WorkerHost {
       previewText,
       senderName,
     };
+  }
+
+  /**
+   * Cria o card de entrada no funil de leads (pipeline `isDefault` da org),
+   * na primeira etapa NORMAL por `order` (convenção: "Novo lead"). Idempotente
+   * por (pipeline, contato) — se já existir card OPEN pro contato nesse
+   * pipeline (ex: reabriu conversa antes do card ser qualificado/arquivado),
+   * não duplica. Best-effort: sem pipeline default configurado, é um no-op
+   * silencioso — não bloqueia a ingestão de mensagens.
+   */
+  private async createLeadCard(
+    organizationId: string,
+    conversationId: string,
+    contactId: string,
+  ): Promise<void> {
+    const pipeline = await this.prisma.pipeline.findFirst({
+      where: { organizationId, isDefault: true, archived: false },
+      include: { stages: true },
+    });
+    if (!pipeline) return;
+
+    const stage = pipeline.stages
+      .filter((s) => s.type === 'NORMAL')
+      .sort((a, b) => a.order - b.order)[0];
+    if (!stage) return;
+
+    const existing = await this.prisma.card.findFirst({
+      where: { organizationId, pipelineId: pipeline.id, contactId, status: 'OPEN' },
+    });
+    if (existing) return;
+
+    const contact = await this.prisma.contact.findUnique({
+      where: { id: contactId },
+      select: { name: true, phone: true },
+    });
+    const title = contact?.name || contact?.phone || 'Novo contato';
+
+    await this.prisma.card.create({
+      data: {
+        organizationId,
+        pipelineId: pipeline.id,
+        stageId: stage.id,
+        title,
+        contactId,
+        conversationId,
+        status: 'OPEN',
+        metadata: { createdBy: 'new_conversation' },
+      },
+    });
   }
 
   private async checkActiveBotForChannel(channelId: string): Promise<boolean> {
