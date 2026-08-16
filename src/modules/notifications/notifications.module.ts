@@ -4,6 +4,7 @@ import { NotificationsController } from './notifications.controller';
 import { NotificationsService } from './notifications.service';
 import { NotificationsRepository } from './notifications.repository';
 import { NotificationProcessor } from './notification.processor';
+import { EmailAlertService } from './email-alert.service';
 
 @Module({
   imports: [
@@ -14,7 +15,8 @@ import { NotificationProcessor } from './notification.processor';
     NotificationsService,
     NotificationsRepository,
     NotificationProcessor,
+    EmailAlertService,
   ],
-  exports: [NotificationsService],
+  exports: [NotificationsService, EmailAlertService],
 })
 export class NotificationsModule {}

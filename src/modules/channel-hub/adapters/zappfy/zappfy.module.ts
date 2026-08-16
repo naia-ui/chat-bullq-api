@@ -6,7 +6,10 @@ import { ZappfyMessageMapper } from './zappfy.message-mapper';
 import { ZappfyHttpClient } from './zappfy.http-client';
 import { ZappfySyncAdapter } from './zappfy.sync-adapter';
 import { ZappfyContactEnricherService } from './zappfy-contact-enricher.service';
+import { ZappfyConnectionHealthCron } from './zappfy-connection-health.cron';
+import { ZAPPFY_HEALTH_QUEUE } from './zappfy-health.constants';
 import { MessagingModule } from '../../../messaging/messaging.module';
+import { NotificationsModule } from '../../../notifications/notifications.module';
 import { AvatarHydrationProcessor } from '../../avatars/avatar-hydration.processor';
 import { AVATAR_HYDRATION_QUEUE } from '../../avatars/avatar-hydration.constants';
 
@@ -16,7 +19,12 @@ import { AVATAR_HYDRATION_QUEUE } from '../../avatars/avatar-hydration.constants
     // MessagingModule — mesmo forwardRef do Gmail/WhatsApp oficial (ciclo
     // channel-hub ↔ messaging).
     forwardRef(() => MessagingModule),
-    BullModule.registerQueue({ name: AVATAR_HYDRATION_QUEUE }),
+    // EmailAlertService (alerta de desconexão do ZappfyConnectionHealthCron).
+    NotificationsModule,
+    BullModule.registerQueue(
+      { name: AVATAR_HYDRATION_QUEUE },
+      { name: ZAPPFY_HEALTH_QUEUE },
+    ),
   ],
   providers: [
     ZappfyInboundAdapter,
@@ -26,6 +34,7 @@ import { AVATAR_HYDRATION_QUEUE } from '../../avatars/avatar-hydration.constants
     ZappfySyncAdapter,
     ZappfyContactEnricherService,
     AvatarHydrationProcessor,
+    ZappfyConnectionHealthCron,
   ],
   exports: [
     ZappfyInboundAdapter,
