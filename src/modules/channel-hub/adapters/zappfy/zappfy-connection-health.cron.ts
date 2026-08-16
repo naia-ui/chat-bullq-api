@@ -141,17 +141,47 @@ export class ZappfyConnectionHealthCron
     return false;
   }
 
-  private isConnected(status: any): boolean {
-    const rawState = status?.state;
+  /**
+   * Shape real observado em produção (GET /instance/status, testado direto
+   * contra a API do Zappfy em 16/08/2026):
+   *   { instance: { status: "connected", ... }, status: { connected: true, loggedIn: true, ... } }
+   * `status` aqui é um OBJETO aninhado, não a string simples que o parser
+   * original (copiado de ChannelsService.testConnection) esperava — por
+   * isso os dois checks abaixo priorizam esse formato real antes de cair
+   * nos fallbacks mais genéricos.
+   */
+  private isConnected(raw: any): boolean {
+    const nestedConnected = raw?.status?.connected;
+    if (typeof nestedConnected === 'boolean') return nestedConnected;
+
+    const instanceStatus = raw?.instance?.status;
+    if (typeof instanceStatus === 'string') {
+      return this.looksConnected(instanceStatus);
+    }
+
+    // Fallbacks pro formato mais simples (outros firmwares Uazapi variam).
+    const rawState = raw?.state;
     const statusStr =
       typeof rawState === 'string'
         ? rawState
         : typeof rawState === 'object' && rawState?.status
           ? String(rawState.status)
-          : typeof status?.status === 'string'
-            ? status.status
+          : typeof raw?.status === 'string'
+            ? raw.status
             : undefined;
-    if (!statusStr) return false; // sem info clara = não confirma conectado
+    if (statusStr) return this.looksConnected(statusStr);
+
+    // Nenhum campo reconhecível — não é prova de queda, só de resposta em
+    // formato inesperado. Assume conectado (mesma postura defensiva do
+    // catch em process(): erro/formato estranho na leitura não pode virar
+    // alerta falso — só uma queda CONFIRMADA dispara e-mail).
+    this.logger.warn(
+      `Resposta de status do Zappfy em formato não reconhecido: ${JSON.stringify(raw)}`,
+    );
+    return true;
+  }
+
+  private looksConnected(statusStr: string): boolean {
     const normalized = statusStr.toLowerCase();
     return normalized.includes('connect') && !normalized.includes('disconnect');
   }
