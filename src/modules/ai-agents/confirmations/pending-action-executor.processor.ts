@@ -7,6 +7,7 @@ import { PrismaService } from '../../../database/prisma.service';
 import { HttpToolExecutorService } from '../tools/http-tool-executor.service';
 import type { ToolContext } from '../tools/tool.types';
 import { PendingActionStorage } from './pending-action.storage';
+import { HandoffNotificationsService } from './handoff-notifications.service';
 import {
   PENDING_ACTION_EXECUTOR_QUEUE,
   PENDING_EXPIRE_JOB,
@@ -42,6 +43,7 @@ export class PendingActionExecutorProcessor extends WorkerHost {
     private readonly prisma: PrismaService,
     private readonly httpExecutor: HttpToolExecutorService,
     private readonly storage: PendingActionStorage,
+    private readonly handoffNotifications: HandoffNotificationsService,
   ) {
     super();
   }
@@ -140,11 +142,38 @@ export class PendingActionExecutorProcessor extends WorkerHost {
       action.args,
     );
 
+    // Dois avisos best-effort — nenhum dos dois pode derrubar o handoff em
+    // si (erro é só logado dentro de cada método, nunca relançado aqui).
+    const reason =
+      typeof action.args?.reason === 'string' ? action.args.reason : null;
+    await this.handoffNotifications.notifyClientIfOutsideHumanHours(
+      action.conversationId,
+    );
+    await this.alertInternalTeamAboutHandoff(action.conversationId, reason);
+
     return {
       ok: true,
       transferredAt: new Date().toISOString(),
       reason: action.args?.reason ?? null,
     };
+  }
+
+  private async alertInternalTeamAboutHandoff(
+    conversationId: string,
+    reason: string | null,
+  ): Promise<void> {
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { id: conversationId },
+      include: { contact: { select: { name: true, phone: true } } },
+    });
+    if (!conversation) return;
+    const contactName =
+      conversation.contact?.name ?? conversation.contact?.phone ?? 'Contato';
+    await this.handoffNotifications.alertInternalTeam(
+      conversationId,
+      contactName,
+      reason,
+    );
   }
 
   /**
