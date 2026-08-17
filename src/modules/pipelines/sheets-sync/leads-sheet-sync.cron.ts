@@ -112,17 +112,17 @@ export class LeadsSheetSyncCron extends WorkerHost implements OnModuleInit {
     ];
 
     const rows: Array<Array<string | number>> = cards.map((c) => [
-      c.pipeline?.name ?? '',
-      c.stage?.name ?? '',
-      c.contact?.name ?? c.title ?? '',
-      c.contact?.phone ?? '',
+      this.sanitizeText(c.pipeline?.name ?? ''),
+      this.sanitizeText(c.stage?.name ?? ''),
+      this.sanitizeText(c.contact?.name ?? c.title ?? ''),
+      this.sanitizeText(c.contact?.phone ?? ''),
       STATUS_LABEL[c.status] ?? c.status,
       c.value ? Number(c.value) : '',
-      c.assignedTo?.name ?? '',
+      this.sanitizeText(c.assignedTo?.name ?? ''),
       this.formatDate(c.createdAt),
       this.formatDate(c.updatedAt),
       c.closedAt ? this.formatDate(c.closedAt) : '',
-      c.closedReason ?? '',
+      this.sanitizeText(c.closedReason ?? ''),
     ]);
 
     const dataRange = `${tabName}!A1:K${Math.max(rows.length + 1, 2)}`;
@@ -161,5 +161,19 @@ export class LeadsSheetSyncCron extends WorkerHost implements OnModuleInit {
       hour: '2-digit',
       minute: '2-digit',
     }).format(d);
+  }
+
+  /**
+   * Escapa valores que o Sheets pode confundir com fórmula. Com
+   * `valueInputOption=USER_ENTERED` (necessário pra datas virarem célula
+   * de data de verdade, não texto cru), qualquer string começando com
+   * `= + - @` é interpretada como início de fórmula — telefone com `+55…`
+   * é o caso real que apareceu como #ERROR! num sync em produção
+   * (16/08/2026). Prefixo `'` é a convenção do próprio Sheets pra forçar
+   * "trate isso como texto literal", funciona igual a digitar à mão.
+   */
+  private sanitizeText(value: string): string {
+    if (/^[=+\-@]/.test(value)) return `'${value}`;
+    return value;
   }
 }
