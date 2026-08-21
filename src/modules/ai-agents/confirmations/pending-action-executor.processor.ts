@@ -7,7 +7,7 @@ import { PrismaService } from '../../../database/prisma.service';
 import { HttpToolExecutorService } from '../tools/http-tool-executor.service';
 import type { ToolContext } from '../tools/tool.types';
 import { PendingActionStorage } from './pending-action.storage';
-import { HandoffNotificationsService } from './handoff-notifications.service';
+import { HandoffExecutionService } from '../handoff/handoff-execution.service';
 import {
   PENDING_ACTION_EXECUTOR_QUEUE,
   PENDING_EXPIRE_JOB,
@@ -28,9 +28,15 @@ type ExecutorJobData =
  *
  * Quando o operador aprova um `AiPendingAction`, o `PendingActionService`
  * enfileira aqui. Esse worker:
- *   - resolve a tool original (built-in `transferToHuman` ou skill HTTP)
+ *   - resolve a tool original (skill HTTP que ainda usa o gate manual)
  *   - executa de fato (HTTP com `bypassPendingGate: true` pra evitar loop)
  *   - grava `executionResult` e marca status `EXECUTED`
+ *
+ * `transferToHuman` deixou de passar por aqui em 17/08/2026 — a tool
+ * executa o handoff direto (HandoffExecutionService), sem esperar
+ * aprovação manual (24/7 sem alguém sempre de olho no painel). O branch
+ * `transferToHuman` abaixo fica só como caminho legado, se algum dia
+ * existir um PendingAction desse tipo criado por outra via.
  *
  * Falhas resultam em status PENDING + executionResult com error → operador
  * pode re-aprovar. Não bloqueia outras pendings.
@@ -43,7 +49,7 @@ export class PendingActionExecutorProcessor extends WorkerHost {
     private readonly prisma: PrismaService,
     private readonly httpExecutor: HttpToolExecutorService,
     private readonly storage: PendingActionStorage,
-    private readonly handoffNotifications: HandoffNotificationsService,
+    private readonly handoffExecution: HandoffExecutionService,
   ) {
     super();
   }
@@ -123,185 +129,24 @@ export class PendingActionExecutorProcessor extends WorkerHost {
     return { expired: result.count };
   }
 
+  /**
+   * Legado: só é acionado se algum dia existir um PendingAction
+   * toolName=transferToHuman pendente de verdade (ex.: criado manualmente
+   * via API). Desde 17/08/2026 a `TransferToHumanTool` executa o handoff
+   * direto, sem passar por aqui — ver `HandoffExecutionService`.
+   */
   private async executeTransferToHuman(action: {
     conversationId: string;
     agentId: string;
     args: Record<string, unknown>;
   }): Promise<unknown> {
-    // Pausa a IA na conversa + sinaliza que aguarda atendente humano.
-    // Notificações em tempo real (banner no inbox) já foram emitidas no
-    // momento da criação do PendingAction — aqui só efetivamos a transição.
-    await this.prisma.conversation.update({
-      where: { id: action.conversationId },
-      data: { aiEnabled: false },
-    });
-
-    await this.upsertHandoffCard(
-      action.conversationId,
-      action.agentId,
-      action.args,
-    );
-
-    // Dois avisos best-effort — nenhum dos dois pode derrubar o handoff em
-    // si (erro é só logado dentro de cada método, nunca relançado aqui).
     const reason =
       typeof action.args?.reason === 'string' ? action.args.reason : null;
-    await this.handoffNotifications.notifyClientIfOutsideHumanHours(
-      action.conversationId,
-    );
-    await this.alertInternalTeamAboutHandoff(action.conversationId, reason);
-
-    return {
-      ok: true,
-      transferredAt: new Date().toISOString(),
-      reason: action.args?.reason ?? null,
-    };
-  }
-
-  private async alertInternalTeamAboutHandoff(
-    conversationId: string,
-    reason: string | null,
-  ): Promise<void> {
-    const conversation = await this.prisma.conversation.findUnique({
-      where: { id: conversationId },
-      include: { contact: { select: { name: true, phone: true } } },
-    });
-    if (!conversation) return;
-    const contactName =
-      conversation.contact?.name ?? conversation.contact?.phone ?? 'Contato';
-    await this.handoffNotifications.alertInternalTeam(
-      conversationId,
-      contactName,
+    return this.handoffExecution.execute({
+      conversationId: action.conversationId,
+      agentId: action.agentId,
       reason,
-    );
-  }
-
-  /**
-   * Handoff pra humano dispara DOIS efeitos no kanban:
-   *
-   *  1. Se existe um card OPEN no funil de leads (pipeline `isDefault`) pra
-   *     esse contato, avança pra etapa de qualificação (WON) — o lead
-   *     "se formou" em caso.
-   *  2. Cria/move o card no pipeline de CASO da área (`aiAgent.pipelineId`
-   *     do agente que pediu o handoff). Sem pipeline mapeado pro agente,
-   *     cai de volta no funil de leads (comportamento antigo, pré-multi-
-   *     pipeline) — nunca perde o card por falta de mapeamento.
-   *
-   * Best-effort nos dois passos — nunca deve derrubar o handoff em si,
-   * qualquer erro aqui só é logado. Idempotente: repetir o handoff da
-   * mesma conversa só move os cards existentes, não duplica.
-   */
-  private async upsertHandoffCard(
-    conversationId: string,
-    agentId: string,
-    args: Record<string, unknown>,
-  ): Promise<void> {
-    try {
-      const conversation = await this.prisma.conversation.findUnique({
-        where: { id: conversationId },
-        select: { organizationId: true, contactId: true },
-      });
-      if (!conversation) return;
-
-      const leadsPipeline = await this.prisma.pipeline.findFirst({
-        where: {
-          organizationId: conversation.organizationId,
-          isDefault: true,
-          archived: false,
-        },
-        include: { stages: true },
-      });
-
-      // Passo 1: avança o card de lead (se existir) pra etapa de
-      // qualificação — primeiro stage WON do funil de leads.
-      if (leadsPipeline) {
-        const qualifiedStage = leadsPipeline.stages.find(
-          (s) => s.type === 'WON',
-        );
-        if (qualifiedStage) {
-          await this.prisma.card
-            .updateMany({
-              where: {
-                organizationId: conversation.organizationId,
-                pipelineId: leadsPipeline.id,
-                contactId: conversation.contactId,
-                status: 'OPEN',
-              },
-              data: { stageId: qualifiedStage.id },
-            })
-            .catch((err) =>
-              this.logger.warn(
-                `Failed to advance leads card for conv ${conversationId}: ${err?.message ?? err}`,
-              ),
-            );
-        }
-      }
-
-      // Passo 2: pipeline de caso da área — vem do agente que transferiu.
-      // Sem mapeamento, cai no funil de leads (comportamento pré-existente).
-      const agent = await this.prisma.aiAgent.findUnique({
-        where: { id: agentId },
-        select: { pipelineId: true },
-      });
-      const casePipeline = agent?.pipelineId
-        ? await this.prisma.pipeline.findFirst({
-            where: {
-              id: agent.pipelineId,
-              organizationId: conversation.organizationId,
-              archived: false,
-            },
-            include: { stages: true },
-          })
-        : leadsPipeline;
-      if (!casePipeline) return;
-
-      const stage = casePipeline.stages
-        .filter((s) => s.type === 'NORMAL')
-        .sort((a, b) => a.order - b.order)[0];
-      if (!stage) return;
-
-      const existing = await this.prisma.card.findFirst({
-        where: {
-          organizationId: conversation.organizationId,
-          pipelineId: casePipeline.id,
-          contactId: conversation.contactId,
-          status: 'OPEN',
-        },
-      });
-
-      if (existing) {
-        await this.prisma.card.update({
-          where: { id: existing.id },
-          data: { stageId: stage.id, conversationId },
-        });
-        return;
-      }
-
-      const contact = await this.prisma.contact.findUnique({
-        where: { id: conversation.contactId },
-        select: { name: true, phone: true },
-      });
-      const title = contact?.name || contact?.phone || 'Novo contato';
-      const reason = typeof args?.reason === 'string' ? args.reason : null;
-
-      await this.prisma.card.create({
-        data: {
-          organizationId: conversation.organizationId,
-          pipelineId: casePipeline.id,
-          stageId: stage.id,
-          title,
-          description: reason,
-          contactId: conversation.contactId,
-          conversationId,
-          status: 'OPEN',
-          metadata: { createdBy: 'transferToHuman' },
-        },
-      });
-    } catch (err: any) {
-      this.logger.warn(
-        `Failed to create/move handoff pipeline card for conversation ${conversationId}: ${err?.message ?? err}`,
-      );
-    }
+    });
   }
 
   private async executeHttpSkill(action: {

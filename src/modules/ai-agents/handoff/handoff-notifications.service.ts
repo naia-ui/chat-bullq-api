@@ -10,7 +10,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
-import { ChannelAdapterRegistry } from '../../channel-hub/channel-adapter.registry';
+import { ZappfyOutboundAdapter } from '../../channel-hub/adapters/zappfy/zappfy.outbound-adapter';
 // `MessageContentType` do channel-hub (normalized-message.types.ts) é um
 // enum DIFERENTE do `@prisma/client` (mesmos nomes, tipos nominalmente
 // incompatíveis) — usado só na chamada direta a `outbound.sendMessage()`,
@@ -29,7 +29,7 @@ const DEDUPE_WINDOW_MS = 12 * 60 * 60 * 1000;
 
 /**
  * Dois avisos disparados no momento em que um handoff pra humano é
- * executado (`PendingActionExecutorProcessor.executeTransferToHuman`):
+ * executado de verdade (`HandoffExecutionService.execute`):
  *
  *  1. `notifyClientIfOutsideHumanHours` — pro CLIENTE, só fora do horário de
  *     atendimento humano (`HUMAN_SUPPORT_HOURS`). A IA (Justine) continua
@@ -48,7 +48,7 @@ export class HandoffNotificationsService {
     private readonly prisma: PrismaService,
     private readonly realtime: RealtimeGateway,
     private readonly config: ConfigService,
-    private readonly adapterRegistry: ChannelAdapterRegistry,
+    private readonly zappfyOutbound: ZappfyOutboundAdapter,
     @InjectQueue('outbound-messages') private readonly outboundQueue: Queue,
   ) {}
 
@@ -201,10 +201,6 @@ export class HandoffNotificationsService {
         return;
       }
 
-      const outbound = this.adapterRegistry.getOutbound(
-        ChannelType.WHATSAPP_ZAPPFY,
-      );
-
       const text =
         `🔔 Tem mensagem no sistema — *${contactName}* está aguardando ` +
         `atendimento humano${reason ? ` (${reason})` : ''}. Dá uma olhada: ` +
@@ -212,7 +208,7 @@ export class HandoffNotificationsService {
 
       for (const number of numbers) {
         try {
-          await outbound.sendMessage(channel, number, {
+          await this.zappfyOutbound.sendMessage(channel, number, {
             type: NormalizedMessageContentType.TEXT,
             content: { text },
           });

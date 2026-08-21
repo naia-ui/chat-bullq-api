@@ -1,13 +1,11 @@
-import { Module, forwardRef } from '@nestjs/common';
-import { BullModule } from '@nestjs/bullmq';
+import { Module } from '@nestjs/common';
 
 import { PrismaModule } from '../../../database/prisma.module';
 import { ToolsModule } from '../tools/tools.module';
-import { ChannelHubModule } from '../../channel-hub/channel-hub.module';
+import { HandoffModule } from '../handoff/handoff.module';
 import { ConfirmationsModule } from './confirmations.module';
 import { PendingActionExecutorProcessor } from './pending-action-executor.processor';
 import { PendingActionCronService } from './pending-action-cron.service';
-import { HandoffNotificationsService } from './handoff-notifications.service';
 
 /**
  * Module separado pra quebrar ciclo de DI:
@@ -26,17 +24,11 @@ import { HandoffNotificationsService } from './handoff-notifications.service';
     PrismaModule,
     ToolsModule,
     ConfirmationsModule,
-    // Pro ping interno de handoff (ChannelAdapterRegistry.getOutbound).
-    // forwardRef: ChannelHubModule → MessagingModule → AiAgentsModule →
-    // ConfirmationExecutorModule é um ciclo real (mesmo padrão que o
-    // ZappfyModule já resolve pro lado channel-hub ↔ messaging).
-    forwardRef(() => ChannelHubModule),
-    BullModule.registerQueue({ name: 'outbound-messages' }),
+    // HandoffExecutionService — caminho legado do processor pra qualquer
+    // PendingAction toolName=transferToHuman que ainda apareça por outra
+    // via (a tool em si já não passa mais por aqui, ver HandoffModule).
+    HandoffModule,
   ],
-  providers: [
-    PendingActionExecutorProcessor,
-    PendingActionCronService,
-    HandoffNotificationsService,
-  ],
+  providers: [PendingActionExecutorProcessor, PendingActionCronService],
 })
 export class ConfirmationExecutorModule {}

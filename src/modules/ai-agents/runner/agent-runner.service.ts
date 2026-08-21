@@ -4,6 +4,7 @@ import {
   AiRunStatus,
   Conversation,
   Message,
+  MessageDirection,
   AiSkill,
   AiTool,
   NotificationType,
@@ -1021,11 +1022,72 @@ export class AiAgentRunnerService {
       }
     }
 
+    // 3) Handoff briefing (não cacheable — só aparece no primeiro turno do
+    // worker após um delegateToAgent). Sem isso, o resumo que o orquestrador
+    // escreveu ao delegar ficava só gravado em AiAgentHandoff.briefing e o
+    // worker nunca via — via só o histórico bruto de mensagens, tinha que
+    // re-inferir tudo sozinho (achado em auditoria, docs/orchestration-
+    // improvements-from-bullq.md item 3, nunca implementado até então).
+    const handoffPart = await this.buildHandoffBriefingPart(
+      conversationId,
+      agentId,
+    );
+
     firstMsg.content = [
       securityPart,
       ...firstMsg.content,
       ...(ragPart ? [ragPart] : []),
+      ...(handoffPart ? [handoffPart] : []),
     ];
+  }
+
+  /**
+   * Monta o bloco "contexto herdado do orquestrador" pro worker que acabou
+   * de receber um delegateToAgent — só aparece enquanto o worker ainda não
+   * respondeu nada nessa conversa desde o handoff (dedupe: uma vez só, não
+   * repete a cada turno subsequente).
+   */
+  private async buildHandoffBriefingPart(
+    conversationId: string,
+    agentId: string,
+  ): Promise<{ type: 'text'; text: string; cache: false } | null> {
+    const handoff = await this.prisma.aiAgentHandoff.findFirst({
+      where: { conversationId, toAgentId: agentId },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!handoff) return null;
+
+    const alreadyReplied = await this.prisma.message.findFirst({
+      where: {
+        conversationId,
+        direction: MessageDirection.OUTBOUND,
+        createdAt: { gt: handoff.createdAt },
+        metadata: { path: ['aiAgentId'], equals: agentId },
+      },
+      select: { id: true },
+    });
+    if (alreadyReplied) return null;
+
+    const fromAgent = handoff.fromAgentId
+      ? await this.prisma.aiAgent.findUnique({
+          where: { id: handoff.fromAgentId },
+          select: { name: true },
+        })
+      : null;
+
+    const lines = [
+      '═══ Contexto herdado do orquestrador ═══',
+      `A conversa foi encaminhada a você por ${fromAgent?.name ?? 'outro agente'}.`,
+      `Motivo do encaminhamento: ${handoff.reason}`,
+    ];
+    if (handoff.briefing) {
+      lines.push(`Resumo do que já foi levantado: ${handoff.briefing}`);
+    }
+    lines.push(
+      'Não repita perguntas que o cliente já respondeu (veja o histórico acima) — continue o atendimento a partir daqui, direto ao ponto.',
+    );
+
+    return { type: 'text', text: lines.join('\n'), cache: false };
   }
 
   /**

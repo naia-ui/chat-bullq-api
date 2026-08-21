@@ -30,6 +30,7 @@ import { HttpToolExecutorService } from './http-tool-executor.service';
 import { SqlToolExecutorService } from './sql-tool-executor.service';
 import { ConfigModule } from '@nestjs/config';
 import { ConfirmationsModule } from '../confirmations/confirmations.module';
+import { HandoffModule } from '../handoff/handoff.module';
 import { SalesRecoveryModule } from '../../sales-recovery/sales-recovery.module';
 
 @Module({
@@ -38,6 +39,9 @@ import { SalesRecoveryModule } from '../../sales-recovery/sales-recovery.module'
     PrismaModule,
     RealtimeModule,
     ConfirmationsModule,
+    // TransferToHumanTool executa o handoff direto via HandoffExecutionService
+    // (sem gate de aprovação manual — ver transfer-to-human.tool.ts).
+    HandoffModule,
     SalesRecoveryModule,
     forwardRef(() => ZappfyModule),
     BullModule.registerQueue({ name: 'outbound-messages' }),
