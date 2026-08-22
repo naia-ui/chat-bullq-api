@@ -971,6 +971,14 @@ model AiAgent {
   // pipeline padrão da org (funil de leads) como fallback.
   pipelineId String? @map("pipeline_id")
 
+  // Número de WhatsApp (DDI+DDD+número, ex: "5551999999999") que recebe o
+  // ping interno quando ESSE agente específico transfere pra humano —
+  // pensado pra troca de plantão (ex: "hoje quem está de plantão
+  // trabalhista é a Paula, amanhã é o João"). Somado aos números fixos de
+  // `HANDOFF_ALERT_WHATSAPP_NUMBERS` (env), não substitui — os dois
+  // recebem o aviso. Null = só os números fixos do env avisam.
+  handoffAlertPhone String? @map("handoff_alert_phone")
+
   // ─── Follow-up automation ──────────────────────────────────
   // Quando este agent envia uma mensagem e o cliente não responde, o
   // sistema agenda follow-ups automáticos seguindo essa cadência (em horas).

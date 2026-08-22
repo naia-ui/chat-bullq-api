@@ -156,26 +156,44 @@ export class HandoffNotificationsService {
    * conversa com cliente — é uma mensagem avulsa pro celular de cada
    * pessoa do time, usando o mesmo canal/número do escritório).
    *
-   * Números vêm de `HANDOFF_ALERT_WHATSAPP_NUMBERS` (env, separados por
-   * vírgula, formato DDI+DDD+número, ex: "5551999999999,5554988888888").
-   * Sem essa env configurada, só loga aviso e não manda nada.
+   * Números somam DUAS fontes:
+   *  - `HANDOFF_ALERT_WHATSAPP_NUMBERS` (env, fixos, separados por vírgula,
+   *    formato DDI+DDD+número) — sempre avisados, qualquer área.
+   *  - `AiAgent.handoffAlertPhone` do agente que pediu o handoff — pensado
+   *    pra plantão que muda (ex: hoje trabalhista é a Paula, amanhã o
+   *    João — só editar o campo do agente, sem mexer em env/deploy).
+   *
+   * Sem nenhuma das duas configuradas, só loga aviso e não manda nada.
    */
   async alertInternalTeam(
     conversationId: string,
     contactName: string,
     reason: string | null,
+    agentId?: string,
   ): Promise<void> {
     try {
-      const numbersRaw = this.config.get<string>(
+      const fixedNumbersRaw = this.config.get<string>(
         'HANDOFF_ALERT_WHATSAPP_NUMBERS',
       );
-      const numbers = (numbersRaw ?? '')
+      const fixedNumbers = (fixedNumbersRaw ?? '')
         .split(',')
         .map((n) => n.trim())
         .filter(Boolean);
+
+      const agentPhone = agentId
+        ? (
+            await this.prisma.aiAgent.findUnique({
+              where: { id: agentId },
+              select: { handoffAlertPhone: true },
+            })
+          )?.handoffAlertPhone?.trim()
+        : null;
+
+      const numbers = [...new Set([...fixedNumbers, ...(agentPhone ? [agentPhone] : [])])];
+
       if (numbers.length === 0) {
         this.logger.warn(
-          'HANDOFF_ALERT_WHATSAPP_NUMBERS não configurado — ping interno de handoff não enviado.',
+          'Nem HANDOFF_ALERT_WHATSAPP_NUMBERS nem handoffAlertPhone do agente configurados — ping interno de handoff não enviado.',
         );
         return;
       }

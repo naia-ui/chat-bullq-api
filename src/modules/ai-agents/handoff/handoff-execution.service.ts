@@ -44,7 +44,7 @@ export class HandoffExecutionService {
     await this.handoffNotifications.notifyClientIfOutsideHumanHours(
       conversationId,
     );
-    await this.alertInternalTeamAboutHandoff(conversationId, reason);
+    await this.alertInternalTeamAboutHandoff(conversationId, agentId, reason);
 
     return {
       ok: true,
@@ -55,6 +55,7 @@ export class HandoffExecutionService {
 
   private async alertInternalTeamAboutHandoff(
     conversationId: string,
+    agentId: string,
     reason: string | null,
   ): Promise<void> {
     const conversation = await this.prisma.conversation.findUnique({
@@ -68,6 +69,7 @@ export class HandoffExecutionService {
       conversationId,
       contactName,
       reason,
+      agentId,
     );
   }
 

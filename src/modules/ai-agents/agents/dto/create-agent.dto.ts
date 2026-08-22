@@ -126,4 +126,14 @@ export class CreateAgentDto {
   @IsString()
   @MaxLength(8000)
   operationalContext?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Número de WhatsApp (DDI+DDD+número, ex: "5551999999999") que recebe o ping interno quando ESSE agente transfere pra humano — pensado pra troca de plantão. Somado aos números fixos do env, não substitui.',
+    example: '5551999999999',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  handoffAlertPhone?: string;
 }

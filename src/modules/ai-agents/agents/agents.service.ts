@@ -38,6 +38,7 @@ export class AgentsService {
         squad: dto.squad ?? null,
         operationalContext: dto.operationalContext ?? null,
         operationalContextUpdatedAt: dto.operationalContext ? new Date() : null,
+        handoffAlertPhone: dto.handoffAlertPhone ?? null,
       },
     });
 
