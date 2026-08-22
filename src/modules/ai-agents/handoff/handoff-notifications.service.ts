@@ -189,7 +189,18 @@ export class HandoffNotificationsService {
           )?.handoffAlertPhone?.trim()
         : null;
 
-      const numbers = [...new Set([...fixedNumbers, ...(agentPhone ? [agentPhone] : [])])];
+      // Normaliza ANTES de deduplicar — sem isso, "48991946004" e
+      // "5548991946004" contam como números diferentes em vez de colapsar
+      // no mesmo. Achado em produção (22/08/2026): número sem DDI falha
+      // calado no Zappfy (nem erro, nem entrega) — normalizar aqui é bem
+      // mais seguro que confiar em todo mundo lembrar de digitar o 55.
+      const numbers = [
+        ...new Set(
+          [...fixedNumbers, ...(agentPhone ? [agentPhone] : [])]
+            .map((n) => this.normalizePhoneNumber(n))
+            .filter(Boolean),
+        ),
+      ];
 
       if (numbers.length === 0) {
         this.logger.warn(
@@ -244,5 +255,23 @@ export class HandoffNotificationsService {
         `Failed to alert internal team for conv ${conversationId}: ${err?.message ?? err}`,
       );
     }
+  }
+
+  /**
+   * Garante DDI 55 num número brasileiro que só tem DDD+número (10 ou 11
+   * dígitos). Já com 55 na frente (12-13 dígitos) mantém como está.
+   * Formato irreconhecível (nem 10-11 nem 12-13 dígitos) passa direto —
+   * deixa o provider rejeitar explicitamente em vez de inventar prefixo
+   * errado pra número de outro país.
+   */
+  private normalizePhoneNumber(raw: string): string {
+    const digits = raw.replace(/\D/g, '');
+    if (digits.startsWith('55') && (digits.length === 12 || digits.length === 13)) {
+      return digits;
+    }
+    if (digits.length === 10 || digits.length === 11) {
+      return `55${digits}`;
+    }
+    return digits;
   }
 }
