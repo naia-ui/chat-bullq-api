@@ -30,6 +30,7 @@ import { ConfirmationsModule } from './confirmations/confirmations.module';
 import { ConfirmationExecutorModule } from './confirmations/confirmation-executor.module';
 import { RagModule } from './rag/rag.module';
 import { EvalsModule } from './evals/evals.module';
+import { AiRunHealthModule } from './monitoring/ai-run-health.module';
 
 @Module({
   imports: [
@@ -48,6 +49,7 @@ import { EvalsModule } from './evals/evals.module';
     ConfirmationExecutorModule,
     RagModule,
     EvalsModule,
+    AiRunHealthModule,
     BullModule.registerQueue({ name: 'outbound-messages' }),
   ],
   controllers: [AgentsController, AiCatalogController],

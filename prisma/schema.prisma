@@ -159,6 +159,17 @@ model Organization {
   /// Default 0.85. Abaixo disso cai no Augusto.
   aiClassifierThreshold Decimal? @default(0.85) @map("ai_classifier_threshold") @db.Decimal(3, 2)
 
+  /// Watermark do AiRunHealthCron — desde quando a org está numa sequência
+  /// de execuções 100% falhando (ex.: crédito de provider esgotado). Null
+  /// = sequência não está ativa (última checagem viu execução bem-sucedida
+  /// ou não tinha volume suficiente pra avaliar). Achado real que motivou
+  /// isso: crédito da Anthropic esgotou e ninguém percebeu por 5 dias
+  /// (22/08/2026) — sem alerta equivalente ao que já existe pro WhatsApp.
+  aiFailureStreakSince     DateTime? @map("ai_failure_streak_since")
+  /// Cooldown de re-alerta enquanto a sequência de falhas continuar —
+  /// mesmo padrão do ZappfyConnectionHealthCron.
+  aiFailureAlertLastSentAt DateTime? @map("ai_failure_alert_last_sent_at")
+
   /// Lista de domínios permitidos em links que a IA pode mandar pro
   /// cliente. Quando preenchido (array com strings tipo "bravy.co",
   /// "trivapp.com.br"), o runtime guard rejeita qualquer URL fora da
