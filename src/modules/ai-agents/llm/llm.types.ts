@@ -44,6 +44,15 @@ export interface LlmToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  /**
+   * Metadado opaco específico de provider que precisa sobreviver o
+   * round-trip dentro do loop de tools de UM run (mantido em memória pelo
+   * agent-runner, nunca serializado pro histórico persistido). Hoje só o
+   * Gemini usa: `{ thoughtSignature }` — a API rejeita com 400 qualquer
+   * functionCall reenviado no histórico sem essa assinatura (achado
+   * testando direto contra a API em 22/08/2026). Anthropic/OpenAI ignoram.
+   */
+  providerMetadata?: Record<string, unknown>;
 }
 
 export interface LlmToolDefinition {

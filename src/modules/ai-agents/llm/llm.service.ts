@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
+import axios from 'axios';
 
 import {
   LlmCompletionRequest,
@@ -32,10 +33,19 @@ type AnthropicContentBlock = Record<string, unknown>;
 type AnthropicMessage = { role: 'user' | 'assistant'; content: AnthropicContentBlock[] };
 type AnthropicTool = Record<string, unknown>;
 
+type GeminiPart = Record<string, unknown>;
+type GeminiContent = { role: 'user' | 'model'; parts: GeminiPart[] };
+type GeminiTool = { functionDeclarations: Record<string, unknown>[] };
+
 /**
  * Cliente LLM normalizado com suporte a Claude/Anthropic (modelos
- * `anthropic/*` ou `claude-*`) e GPT/OpenAI (modelos `openai/*` ou `gpt-*`)
- * diretos via API oficial de cada provider.
+ * `anthropic/*` ou `claude-*`), GPT/OpenAI (modelos `openai/*` ou `gpt-*`)
+ * e Gemini/Google (modelos `google/*` ou `gemini-*`) diretos via API
+ * oficial de cada provider.
+ *
+ * Gemini é o único sem SDK oficial instalado — chamado via REST direto
+ * (axios), mesmo padrão sem-SDK já usado em GmailAuthService e
+ * GoogleSheetsAuthService pra outras APIs do Google neste projeto.
  *
  * Mantém o contrato público usado pelo runner, classifier, memória, RAG e
  * evals (`complete()`, `LlmMessage`, `LlmToolDefinition`) — o roteamento
@@ -48,6 +58,9 @@ export class LlmService {
   private readonly hasAnthropicKey: boolean;
   private readonly openaiDirectClient: OpenAI | null;
   private readonly hasOpenAiDirectKey: boolean;
+  private readonly geminiApiKey: string | null;
+  private static readonly GEMINI_BASE_URL =
+    'https://generativelanguage.googleapis.com/v1beta/models';
 
   constructor(config: ConfigService) {
     const anthropicApiKey = config.get<string>('ANTHROPIC_API_KEY');
@@ -74,6 +87,14 @@ export class LlmService {
         'OPENAI_API_KEY not set — GPT models will fail at runtime',
       );
     }
+
+    const geminiApiKey = config.get<string>('GEMINI_API_KEY');
+    this.geminiApiKey = geminiApiKey ?? null;
+    if (!geminiApiKey) {
+      this.logger.warn(
+        'GEMINI_API_KEY not set — Gemini models will fail at runtime',
+      );
+    }
   }
 
   async complete(req: LlmCompletionRequest): Promise<LlmCompletionResponse> {
@@ -84,8 +105,11 @@ export class LlmService {
     if (this.isOpenAiDirectModel(modelId)) {
       return this.completeOpenAiDirect(req, modelId);
     }
+    if (this.isGeminiModel(modelId)) {
+      return this.completeGemini(req, modelId);
+    }
     throw new BadRequestException(
-      `Unsupported LLM model "${modelId}". Use anthropic/claude-* or openai/gpt-*.`,
+      `Unsupported LLM model "${modelId}". Use anthropic/claude-*, openai/gpt-* or google/gemini-*.`,
     );
   }
 
@@ -95,6 +119,10 @@ export class LlmService {
 
   private isOpenAiDirectModel(modelId: string): boolean {
     return modelId.startsWith('openai/') || modelId.startsWith('gpt-');
+  }
+
+  private isGeminiModel(modelId: string): boolean {
+    return modelId.startsWith('google/') || modelId.startsWith('gemini-');
   }
 
   // ─── OpenAI direto (modelId `openai/*` ou `gpt-*`) ─────────────────
@@ -435,6 +463,304 @@ export class LlmService {
       outputTokens: output,
       cacheReadTokens: cacheRead,
       cacheWriteTokens: cacheWrite,
+      costUsd: 0,
+    };
+  }
+
+  // ─── Gemini/Google direto (modelId `google/*` ou `gemini-*`) ──────
+
+  private async completeGemini(
+    req: LlmCompletionRequest,
+    rawModelId: string,
+  ): Promise<LlmCompletionResponse> {
+    if (!this.geminiApiKey) {
+      throw new InternalServerErrorException('GEMINI_API_KEY not set');
+    }
+
+    const model = this.normalizeGeminiModelId(rawModelId);
+    const systemParts: string[] = [];
+    const contents = this.toGeminiContents(req.messages, systemParts);
+    const tools = req.tools
+      ? this.toGeminiTools(this.sanitizeTools(req.tools))
+      : undefined;
+
+    let data: any;
+    try {
+      const resp = await axios.post(
+        `${LlmService.GEMINI_BASE_URL}/${model}:generateContent`,
+        {
+          contents,
+          ...(systemParts.length > 0
+            ? { systemInstruction: { parts: [{ text: systemParts.join('\n\n') }] } }
+            : {}),
+          ...(tools && tools.length > 0 ? { tools } : {}),
+          generationConfig: {
+            temperature: req.temperature ?? 0.7,
+            maxOutputTokens: req.maxTokens ?? 2048,
+            // SEM thinkingConfig de propósito — testei mandar
+            // {thinkingBudget:0} pra desligar "pensamento" e quebrou a
+            // chamada inteira com 400 invalid_argument no modelo
+            // recomendado (gemini-flash-lite-latest). Esse modelo já não
+            // pensa por padrão (confirmado: 0 thoughtsTokenCount em todo
+            // teste direto contra a API em 22/08/2026), então não precisa
+            // do parâmetro. Modelos "flash" sem "-lite" pensam por padrão
+            // e cobram bem mais caro por isso (achado real: 700+ tokens de
+            // pensamento pra 9 de resposta) — se algum dia um agente for
+            // configurado com um desses, vale revisitar esse ponto.
+          },
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'X-goog-api-key': this.geminiApiKey,
+          },
+          timeout: 60_000,
+        },
+      );
+      data = resp.data;
+    } catch (err: unknown) {
+      this.logger.error(
+        `LLM call failed [google/${model}]: ${this.errorMessage(err)}`,
+      );
+      throw new InternalServerErrorException(
+        `LLM provider error: ${this.errorMessage(err)}`,
+      );
+    }
+
+    const candidate = data?.candidates?.[0];
+    if (!candidate?.content) {
+      throw new InternalServerErrorException('LLM provider returned no message');
+    }
+
+    const message = this.fromGeminiParts(candidate.content.parts ?? []);
+    const stopReason = this.normalizeGeminiStopReason(
+      candidate.finishReason,
+      !!message.toolCalls?.length,
+    );
+    const usage = this.extractGeminiUsage(data?.usageMetadata, model);
+
+    return {
+      message,
+      stopReason,
+      usage,
+      rawModelId: data?.modelVersion ?? model,
+    };
+  }
+
+  /** Aceita `google/gemini-...` ou `gemini-...` puro; API só quer o ID puro. */
+  private normalizeGeminiModelId(id: string): string {
+    const trimmed = id.startsWith('google/') ? id.slice('google/'.length) : id;
+    if (!trimmed.startsWith('gemini-')) {
+      throw new BadRequestException(`Unsupported Gemini model "${id}".`);
+    }
+    return trimmed;
+  }
+
+  /**
+   * Converte `LlmMessage[]` pro formato Gemini `contents`: roles viram
+   * `user`/`model` (não `user`/`assistant`), tool calls do assistant viram
+   * parts `functionCall`, e resultados de tool voltam como parts
+   * `functionResponse` — dentro de uma mensagem `role: 'user'`, que é a
+   * convenção documentada da API REST v1beta pra devolver resultado de
+   * função (Gemini não tem um role `tool` dedicado como Anthropic/OpenAI).
+   * Várias tool results consecutivas se fundem na mesma mensagem `user`,
+   * mesmo padrão de merge do `toAnthropicMessages`.
+   */
+  private toGeminiContents(
+    input: LlmMessage[],
+    systemParts: string[],
+  ): GeminiContent[] {
+    const out: GeminiContent[] = [];
+
+    const pushParts = (role: 'user' | 'model', parts: GeminiPart[]) => {
+      if (parts.length === 0) return;
+      const last = out[out.length - 1];
+      if (last && last.role === role) {
+        last.parts.push(...parts);
+        return;
+      }
+      out.push({ role, parts });
+    };
+
+    for (const m of input) {
+      if (m.role === 'system') {
+        const text = this.textOnly(m.content);
+        if (text) systemParts.push(text);
+        continue;
+      }
+
+      if (m.role === 'tool') {
+        if (!m.toolCallId || !m.name) {
+          this.logger.warn('Tool message without toolCallId/name — dropping (Gemini)');
+          continue;
+        }
+        pushParts('user', [
+          {
+            functionResponse: {
+              id: m.toolCallId,
+              name: m.name,
+              response: { result: this.textOnly(m.content) || '(empty)' },
+            },
+          },
+        ]);
+        continue;
+      }
+
+      if (m.role === 'user') {
+        pushParts('user', this.toGeminiContentParts(m.content));
+        continue;
+      }
+
+      if (m.role === 'assistant') {
+        const parts: GeminiPart[] = [];
+        const text = this.textOnly(m.content);
+        if (text) parts.push({ text });
+        for (const tc of m.toolCalls ?? []) {
+          const thoughtSignature = tc.providerMetadata?.thoughtSignature;
+          parts.push({
+            functionCall: { id: tc.id, name: tc.name, args: tc.arguments },
+            // Obrigatório reenviar exatamente como veio — sem isso a API
+            // rejeita com 400 "missing thought_signature" (ver comentário
+            // em LlmToolCall.providerMetadata). Omite quando a tool call
+            // não veio do Gemini nesta mesma conversa (ex.: histórico
+            // reconstruído sem metadata) — deixa a API reclamar de forma
+            // explícita em vez de inventar uma assinatura falsa.
+            ...(thoughtSignature ? { thoughtSignature } : {}),
+          });
+        }
+        pushParts('model', parts);
+      }
+    }
+
+    return out;
+  }
+
+  private toGeminiContentParts(content: LlmContent): GeminiPart[] {
+    if (typeof content === 'string') {
+      return content.length > 0 ? [{ text: content }] : [];
+    }
+
+    const parts: GeminiPart[] = [];
+    for (const part of content) {
+      if (part.type === 'text') {
+        if (part.text && part.text.length > 0) parts.push({ text: part.text });
+        continue;
+      }
+      if (part.type === 'image') {
+        if (part.base64) {
+          parts.push({
+            inlineData: {
+              mimeType: part.base64.mediaType,
+              data: part.base64.data,
+            },
+          });
+        } else if (part.url) {
+          // API REST não aceita URL pública direto num content part — sem
+          // baixar o arquivo aqui, sinaliza só com texto descritivo em vez
+          // de quebrar a chamada.
+          parts.push({ text: `[imagem: ${part.url}]` });
+        }
+      }
+    }
+    return parts;
+  }
+
+  private toGeminiTools(tools: LlmToolDefinition[]): GeminiTool[] {
+    return [
+      {
+        functionDeclarations: tools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters,
+        })),
+      },
+    ];
+  }
+
+  private fromGeminiParts(parts: GeminiPart[]): LlmMessage {
+    let text = '';
+    const toolCalls: LlmToolCall[] = [];
+    let callIndex = 0;
+    for (const part of parts) {
+      if (typeof part.text === 'string') {
+        text += part.text;
+      } else if (part.functionCall) {
+        const fc = part.functionCall as { id?: string; name: string; args?: Record<string, unknown> };
+        toolCalls.push({
+          id: fc.id ?? `gemini_call_${++callIndex}`,
+          name: fc.name,
+          arguments: fc.args ?? {},
+          ...(typeof part.thoughtSignature === 'string'
+            ? { providerMetadata: { thoughtSignature: part.thoughtSignature } }
+            : {}),
+        });
+      }
+    }
+    return {
+      role: 'assistant',
+      content: text,
+      ...(toolCalls.length > 0 ? { toolCalls } : {}),
+    };
+  }
+
+  /**
+   * Gemini usa `finishReason: "STOP"` tanto pra resposta final de texto
+   * quanto pra chamada de função (achado testando direto contra a API em
+   * 22/08/2026 — vem junto um `finishMessage: "Model generated function
+   * call(s)."`, mas o finishReason em si não distingue os dois casos como
+   * Anthropic/OpenAI fazem). Por isso a presença de tool calls manda mais
+   * que o valor literal do campo.
+   */
+  private normalizeGeminiStopReason(
+    reason: string | null | undefined,
+    hasToolCalls: boolean,
+  ): LlmCompletionResponse['stopReason'] {
+    if (hasToolCalls) return 'tool_calls';
+    switch (reason) {
+      case 'STOP':
+        return 'stop';
+      case 'MAX_TOKENS':
+        return 'length';
+      case 'SAFETY':
+      case 'RECITATION':
+        return 'content_filter';
+      default:
+        return 'other';
+    }
+  }
+
+  /**
+   * A Gemini não expõe custo em USD na resposta — mesma política de
+   * costUsd=0 aplicada aos outros dois providers. `thoughtsTokenCount`
+   * (tokens de "pensamento" interno, quando o modelo usa) soma dentro de
+   * outputTokens porque é cobrado como token de saída pela Google, mesmo
+   * não aparecendo no texto visível da resposta.
+   */
+  private extractGeminiUsage(
+    usage:
+      | {
+          promptTokenCount?: number;
+          candidatesTokenCount?: number;
+          thoughtsTokenCount?: number;
+          cachedContentTokenCount?: number;
+        }
+      | undefined,
+    modelId: string,
+  ): LlmUsage {
+    const input = usage?.promptTokenCount ?? 0;
+    const output =
+      (usage?.candidatesTokenCount ?? 0) + (usage?.thoughtsTokenCount ?? 0);
+    const cacheRead = usage?.cachedContentTokenCount ?? 0;
+
+    this.logger.debug(
+      `gemini_cost_unavailable — recording tokens with costUsd=0 [${modelId}]`,
+    );
+
+    return {
+      inputTokens: input,
+      outputTokens: output,
+      cacheReadTokens: cacheRead,
+      cacheWriteTokens: 0,
       costUsd: 0,
     };
   }
