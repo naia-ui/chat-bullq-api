@@ -19,6 +19,16 @@ export interface AgentSelection {
   classifierCostUsd: number;
 }
 
+/**
+ * Nome exato do agente WORKER de atendimento a cliente já existente —
+ * precisa ser criado manualmente na tela de Agentes com esse nome literal
+ * (mesma convenção de `IntentRouterService.MAP`, que já espera "Justine"
+ * pro orquestrador). Sem esse agente cadastrado, o bypass simplesmente não
+ * encontra ninguém e o roteamento cai no fluxo normal — nunca trava o
+ * atendimento por falta de configuração.
+ */
+export const EXISTING_CLIENT_AGENT_NAME = 'Justine Clientes';
+
 @Injectable()
 export class AgentRouterService {
   private readonly logger = new Logger(AgentRouterService.name);
@@ -61,6 +71,29 @@ export class AgentRouterService {
           classifierCostUsd: 0,
         };
       }
+    }
+
+    // 1.5. Cliente já existente (card GANHO em qualquer pipeline OU tag
+    // manual "cliente-existente") → vai direto pro atendimento de cliente,
+    // sem gastar chamada de classificador nem passar pela triagem por área
+    // (quem já é cliente não precisa re-explicar em qual área se encaixa).
+    const existingClientAgent = await this.findExistingClientAgent(
+      conversation,
+    );
+    if (existingClientAgent) {
+      this.logger.log({
+        msg: 'agent_selected_existing_client',
+        agentName: existingClientAgent.name,
+        contactId: conversation.contactId,
+      });
+      return {
+        agentId: existingClientAgent.id,
+        agentName: existingClientAgent.name,
+        classifiedIntent: 'EXISTING_CLIENT',
+        classifierConfidence: 1,
+        skippedOrchestrator: true,
+        classifierCostUsd: 0,
+      };
     }
 
     // 2. Carrega threshold da org
@@ -135,6 +168,52 @@ export class AgentRouterService {
       fallback.classifierCostUsd = classification.costUsd;
     }
     return fallback;
+  }
+
+  /**
+   * Retorna o agente "Justine Clientes" se (a) ele existir e estiver ativo
+   * na org E (b) o contato dessa conversa já for cliente — card com
+   * status GANHO em qualquer pipeline, ou tag manual "cliente-existente".
+   * Sem o agente cadastrado ou sem sinal de cliente existente, retorna
+   * null e o roteamento normal por área segue intocado.
+   */
+  private async findExistingClientAgent(
+    conversation: Conversation,
+  ): Promise<{ id: string; name: string } | null> {
+    const [agent, wonCard, existingClientTag] = await Promise.all([
+      this.prisma.aiAgent.findFirst({
+        where: {
+          organizationId: conversation.organizationId,
+          name: EXISTING_CLIENT_AGENT_NAME,
+          kind: 'WORKER',
+          isActive: true,
+          deletedAt: null,
+        },
+        select: { id: true, name: true },
+      }),
+      this.prisma.card.findFirst({
+        where: {
+          organizationId: conversation.organizationId,
+          contactId: conversation.contactId,
+          status: 'WON',
+        },
+        select: { id: true },
+      }),
+      this.prisma.contactTag.findFirst({
+        where: {
+          contactId: conversation.contactId,
+          tag: {
+            organizationId: conversation.organizationId,
+            name: 'cliente-existente',
+          },
+        },
+        select: { contactId: true },
+      }),
+    ]);
+
+    if (!agent) return null; // "Justine Clientes" ainda não foi criada na org.
+    if (!wonCard && !existingClientTag) return null; // não é cliente conhecido.
+    return agent;
   }
 
   private async fallbackToOrchestrator(
