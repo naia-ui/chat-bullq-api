@@ -1,6 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 import {
+  ANTHROPIC_SIMPLE_MODEL,
+  ANTHROPIC_CONVERSATION_MODEL,
+  OPENAI_SIMPLE_MODEL,
+  OPENAI_CONVERSATION_MODEL,
+  GEMINI_SIMPLE_MODEL,
+  GEMINI_CONVERSATION_MODEL,
   DEFAULT_CONVERSATION_MODEL,
   DEFAULT_SIMPLE_MODEL,
 } from '../llm/llm.constants';
@@ -56,14 +62,24 @@ export interface SelectModelInput {
  *      • ORCHESTRATOR (triagem/small-talk/ambíguo) → fica no barato.
  *  - Qualquer agente pode sobrescrever via `modelParams.routing`.
  *
- * BUG REAL corrigido em 24/08/2026: `sanitizeModel()` só reconhecia prefixos
- * Anthropic/OpenAI. Quando o Gemini foi integrado no LlmService (22/08), essa
- * allowlist não foi atualizada — todo agente configurado com
+ * BUG REAL #1 corrigido em 24/08/2026: `sanitizeModel()` só reconhecia
+ * prefixos Anthropic/OpenAI. Quando o Gemini foi integrado no LlmService
+ * (22/08), essa allowlist não foi atualizada — todo agente configurado com
  * `google/gemini-*` caía no fallback Anthropic aqui DENTRO, silenciosamente,
  * antes mesmo de chegar no LlmService (que já suportava Gemini
- * corretamente). Resultado: com a Anthropic sem crédito, 100% dos runs de
- * TODOS os agentes falhavam, mesmo os já trocados pra Gemini na UI — o
- * agent.modelId salvo no banco nunca era de fato usado na chamada.
+ * corretamente).
+ *
+ * BUG REAL #2 corrigido em 24/08/2026 (mesmo dia, achado só depois de
+ * redeployar o #1 e ver que ainda falhava): mesmo com sanitizeModel()
+ * corrigido, o `primary` (modelo barato — usado em TODA chamada de fase
+ * 'tool', ou seja, na primeira chamada de QUALQUER run, antes de chegar
+ * perto da síntese) sempre caía direto no `DEFAULT_SIMPLE_MODEL` fixo
+ * (Anthropic), ignorando completamente a família do provider do próprio
+ * agente. Um agente 100% Gemini ainda tinha sua primeira chamada de cada
+ * run forçada pra Anthropic. Fix: o fallback de `primary`/`escalation`
+ * agora deriva da família do `input.modelId` (`familySimpleModel` /
+ * `familyConversationModel`) em vez de um default fixo — só cai no
+ * `DEFAULT_*` genérico quando a família não é reconhecível.
  */
 @Injectable()
 export class ModelRouterService {
@@ -72,14 +88,19 @@ export class ModelRouterService {
   selectModel(input: SelectModelInput): string {
     const routing = this.parseRouting(input.modelParams);
 
-    // Sanitiza pra GARANTIR que só saem daqui modelos Anthropic ou OpenAI
-    // reconhecidos. Overrides mal preenchidos (vazio, lixo, ou um modelId
-    // legado de um provider removido) caem no fallback informado em vez de
-    // quebrar no provider.
-    const primary = this.sanitizeModel(routing.primary, DEFAULT_SIMPLE_MODEL);
+    // Sanitiza pra GARANTIR que só saem daqui modelos reconhecidos.
+    // Overrides mal preenchidos (vazio, lixo, ou um modelId legado de um
+    // provider removido) caem no fallback informado em vez de quebrar no
+    // provider. O fallback é da MESMA família do provider do agente — não
+    // um default fixo — pra não forçar Anthropic num agente configurado
+    // pra outro provider (ver BUG REAL #2 acima).
+    const primary = this.sanitizeModel(
+      routing.primary,
+      this.familySimpleModel(input.modelId),
+    );
     const escalation = this.sanitizeModel(
       routing.escalation ?? input.modelId,
-      DEFAULT_CONVERSATION_MODEL,
+      this.familyConversationModel(input.modelId),
     );
 
     if (routing.alwaysPrimary) return primary;
@@ -113,6 +134,41 @@ export class ModelRouterService {
       return m;
     }
     return fallback;
+  }
+
+  /**
+   * Modelo barato da MESMA família do `modelId` informado (tipicamente
+   * `agent.modelId`). Cai no `DEFAULT_SIMPLE_MODEL` (Anthropic) só quando a
+   * família não é reconhecível — nunca força Anthropic num agente Gemini ou
+   * OpenAI.
+   */
+  private familySimpleModel(modelId: string): string {
+    const m = (modelId ?? '').trim();
+    if (m.startsWith('google/') || m.startsWith('gemini-')) {
+      return GEMINI_SIMPLE_MODEL;
+    }
+    if (m.startsWith('openai/') || m.startsWith('gpt-')) {
+      return OPENAI_SIMPLE_MODEL;
+    }
+    if (m.startsWith('anthropic/') || m.startsWith('claude-')) {
+      return ANTHROPIC_SIMPLE_MODEL;
+    }
+    return DEFAULT_SIMPLE_MODEL;
+  }
+
+  /** Idem `familySimpleModel`, mas pro nível "conversa" (síntese final). */
+  private familyConversationModel(modelId: string): string {
+    const m = (modelId ?? '').trim();
+    if (m.startsWith('google/') || m.startsWith('gemini-')) {
+      return GEMINI_CONVERSATION_MODEL;
+    }
+    if (m.startsWith('openai/') || m.startsWith('gpt-')) {
+      return OPENAI_CONVERSATION_MODEL;
+    }
+    if (m.startsWith('anthropic/') || m.startsWith('claude-')) {
+      return ANTHROPIC_CONVERSATION_MODEL;
+    }
+    return DEFAULT_CONVERSATION_MODEL;
   }
 
   private parseRouting(
