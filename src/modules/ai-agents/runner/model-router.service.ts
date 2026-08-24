@@ -45,7 +45,8 @@ export interface SelectModelInput {
 
 /**
  * Decide qual modelo usar em cada chamada do loop do agente. Providers
- * suportados: Anthropic (Claude) e OpenAI (GPT) — Sakana foi removido.
+ * suportados: Anthropic (Claude), OpenAI (GPT) e Gemini (Google) — Sakana
+ * foi removido.
  *
  * Estratégia (objetivo: usar o modelo barato o máximo possível):
  *  - Toda iteração de ferramenta roda no modelo barato (baixa latência).
@@ -54,6 +55,15 @@ export interface SelectModelInput {
  *        conversa (é a resposta que o cliente lê; qualidade importa).
  *      • ORCHESTRATOR (triagem/small-talk/ambíguo) → fica no barato.
  *  - Qualquer agente pode sobrescrever via `modelParams.routing`.
+ *
+ * BUG REAL corrigido em 24/08/2026: `sanitizeModel()` só reconhecia prefixos
+ * Anthropic/OpenAI. Quando o Gemini foi integrado no LlmService (22/08), essa
+ * allowlist não foi atualizada — todo agente configurado com
+ * `google/gemini-*` caía no fallback Anthropic aqui DENTRO, silenciosamente,
+ * antes mesmo de chegar no LlmService (que já suportava Gemini
+ * corretamente). Resultado: com a Anthropic sem crédito, 100% dos runs de
+ * TODOS os agentes falhavam, mesmo os já trocados pra Gemini na UI — o
+ * agent.modelId salvo no banco nunca era de fato usado na chamada.
  */
 @Injectable()
 export class ModelRouterService {
@@ -86,9 +96,9 @@ export class ModelRouterService {
 
   /**
    * Garante que o modelo é um ID reconhecido — Anthropic (anthropic/*,
-   * claude-*) ou OpenAI (openai/*, gpt-*). Qualquer outra coisa (override
-   * quebrado, vazio, ou um modelId legado de provider removido como Sakana)
-   * cai no fallback informado.
+   * claude-*), OpenAI (openai/*, gpt-*) ou Gemini (google/*, gemini-*).
+   * Qualquer outra coisa (override quebrado, vazio, ou um modelId legado de
+   * provider removido como Sakana) cai no fallback informado.
    */
   private sanitizeModel(model: string | undefined | null, fallback: string): string {
     const m = (model ?? '').trim();
@@ -96,7 +106,9 @@ export class ModelRouterService {
       m.startsWith('anthropic/') ||
       m.startsWith('claude-') ||
       m.startsWith('openai/') ||
-      m.startsWith('gpt-')
+      m.startsWith('gpt-') ||
+      m.startsWith('google/') ||
+      m.startsWith('gemini-')
     ) {
       return m;
     }
