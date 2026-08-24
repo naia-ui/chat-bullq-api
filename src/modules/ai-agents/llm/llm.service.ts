@@ -671,10 +671,41 @@ export class LlmService {
         functionDeclarations: tools.map((t) => ({
           name: t.name,
           description: t.description,
-          parameters: t.parameters,
+          parameters: this.stripUnsupportedGeminiSchemaKeys(t.parameters),
         })),
       },
     ];
+  }
+
+  /**
+   * O parser de schema do Gemini (subset de OpenAPI 3.0, não JSON Schema
+   * completo) rejeita chaves que não conhece com 400 INVALID_ARGUMENT em
+   * vez de ignorá-las. `additionalProperties` é a mais comum — TODAS as
+   * tools deste projeto foram escritas pensando em Anthropic/OpenAI
+   * (que aceitam) e usam `additionalProperties: false` pra travar o
+   * schema. Achado ao vivo em produção 24/08/2026: reproduzi contra a API
+   * real — com `additionalProperties` a chamada quebra com
+   * 'Unknown name "additionalProperties" ... Cannot find field.'; removendo
+   * só essa chave (mantendo minLength/maxLength/etc, que o Gemini aceita
+   * bem) a mesma chamada funciona. Remove recursivamente porque schemas
+   * aninhados (objeto dentro de objeto) podem repetir a chave em qualquer
+   * nível.
+   */
+  private stripUnsupportedGeminiSchemaKeys(schema: unknown): unknown {
+    if (Array.isArray(schema)) {
+      return schema.map((item) => this.stripUnsupportedGeminiSchemaKeys(item));
+    }
+    if (schema && typeof schema === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(
+        schema as Record<string, unknown>,
+      )) {
+        if (key === 'additionalProperties') continue;
+        out[key] = this.stripUnsupportedGeminiSchemaKeys(value);
+      }
+      return out;
+    }
+    return schema;
   }
 
   private fromGeminiParts(parts: GeminiPart[]): LlmMessage {
@@ -1036,7 +1067,23 @@ export class LlmService {
     }
   }
 
+  /**
+   * Axios (usado só pro Gemini, sem SDK) não embute o corpo da resposta de
+   * erro em `err.message` como o SDK da Anthropic/OpenAI faz — só devolve
+   * algo genérico tipo "Request failed with status code 400", escondendo o
+   * motivo real (achado ao vivo em produção 24/08/2026, depurando o
+   * primeiro erro 400 real do Gemini: sem isso o log só mostrava o status
+   * code, sem a mensagem de erro da API do Google). Desembrulha
+   * `err.response.data` quando existe pra não perder essa informação de
+   * novo.
+   */
   private errorMessage(err: unknown): string {
+    if (axios.isAxiosError(err)) {
+      if (err.response?.data !== undefined) {
+        return `${err.message} — ${safeStringify(err.response.data)}`;
+      }
+      return err.message;
+    }
     if (err instanceof Error) return err.message;
     return String(err);
   }
