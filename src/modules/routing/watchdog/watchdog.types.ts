@@ -33,6 +33,17 @@ export const DEFAULT_WATCHDOG_CONFIG: Required<WatchdogConfig> = {
 /** Intervalo do cron de fallback. */
 export const WATCHDOG_FALLBACK_PATTERN = '*/15 * * * *'; // a cada 15min
 
+/** Nome do repeatable cron de retry de conversas presas ("toda manhã"). */
+export const WATCHDOG_STUCK_RETRY_JOB = 'watchdog-stuck-retry';
+
+/**
+ * Horário do retry diário de conversas presas — sobreponível via env
+ * WATCHDOG_STUCK_RETRY_PATTERN. Default 8h da manhã, horário de Brasília
+ * (ver `tz` no registro do repeatable job — cron sem tz roda em UTC, que
+ * seria 5h da manhã de verdade, não 8h).
+ */
+export const WATCHDOG_STUCK_RETRY_PATTERN_DEFAULT = '0 8 * * *';
+
 export interface WatchdogConfig {
   /** Minutos sem resposta com status=BOT antes de reativar IA. */
   delayBotMin?: number;

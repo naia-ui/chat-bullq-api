@@ -18,6 +18,7 @@ import {
   WATCHDOG_QUEUE,
   WATCHDOG_CHECK_JOB,
   WATCHDOG_FALLBACK_JOB,
+  WATCHDOG_STUCK_RETRY_JOB,
   WatchdogJobData,
 } from './watchdog.types';
 
@@ -55,9 +56,12 @@ export class WatchdogTimerProcessor extends WorkerHost {
   }
 
   async process(job: Job<WatchdogJobData>): Promise<unknown> {
-    // O cron de fallback usa a mesma fila — diferencia pelo nome do job.
+    // Os crons de fallback usam a mesma fila — diferencia pelo nome do job.
     if (job.name === WATCHDOG_FALLBACK_JOB) {
       return this.cron.scanAndEnqueue();
+    }
+    if (job.name === WATCHDOG_STUCK_RETRY_JOB) {
+      return this.cron.retryStuckConversations();
     }
     if (job.name !== WATCHDOG_CHECK_JOB) {
       return { skipped: true, reason: 'unknown_job_name' };
