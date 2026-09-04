@@ -91,7 +91,7 @@ export class LeadsSheetSyncCron extends WorkerHost implements OnModuleInit {
       include: {
         pipeline: { select: { name: true } },
         stage: { select: { name: true } },
-        contact: { select: { name: true, phone: true } },
+        contact: { select: { name: true, phone: true, metadata: true } },
         assignedTo: { select: { name: true } },
       },
       orderBy: { updatedAt: 'desc' },
@@ -102,6 +102,7 @@ export class LeadsSheetSyncCron extends WorkerHost implements OnModuleInit {
       'Etapa',
       'Contato',
       'Telefone',
+      'Origem',
       'Status',
       'Valor',
       'Responsável',
@@ -116,6 +117,7 @@ export class LeadsSheetSyncCron extends WorkerHost implements OnModuleInit {
       this.sanitizeText(c.stage?.name ?? ''),
       this.sanitizeText(c.contact?.name ?? c.title ?? ''),
       this.sanitizeText(c.contact?.phone ?? ''),
+      this.sanitizeText(this.originLabel(c.contact?.metadata)),
       STATUS_LABEL[c.status] ?? c.status,
       c.value ? Number(c.value) : '',
       this.sanitizeText(c.assignedTo?.name ?? ''),
@@ -125,7 +127,7 @@ export class LeadsSheetSyncCron extends WorkerHost implements OnModuleInit {
       this.sanitizeText(c.closedReason ?? ''),
     ]);
 
-    const dataRange = `${tabName}!A1:K${Math.max(rows.length + 1, 2)}`;
+    const dataRange = `${tabName}!A1:L${Math.max(rows.length + 1, 2)}`;
 
     try {
       // Cria a aba se ainda não existir (nunca toca em aba já existente
@@ -149,6 +151,18 @@ export class LeadsSheetSyncCron extends WorkerHost implements OnModuleInit {
 
     this.logger.log(`Leads sheet sync: ${rows.length} card(s) escrito(s).`);
     return { rows: rows.length };
+  }
+
+  /**
+   * Origem do lead (site/landing page/Google Ads) — gravada por
+   * `LeadOriginService` em `Contact.metadata.origin` quando a primeira
+   * mensagem trazia o marcador `#origem:<slug>`. Sem marcador (maioria dos
+   * contatos hoje, e todo contato antigo), fica em branco na planilha —
+   * não é erro, só significa que a origem não foi rastreada nesse caso.
+   */
+  private originLabel(metadata: unknown): string {
+    const origin = (metadata as Record<string, unknown> | null)?.origin;
+    return typeof origin === 'string' ? origin : '';
   }
 
   private formatDate(d: Date | null): string {

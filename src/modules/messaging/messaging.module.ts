@@ -13,6 +13,7 @@ import { ContactResolverService } from './pipeline/contact-resolver.service';
 import { ConversationResolverService } from './pipeline/conversation-resolver.service';
 import { HistoryImportService } from './pipeline/history-import.service';
 import { InboundMessageProcessor } from './pipeline/inbound-message.processor';
+import { LeadOriginService } from './pipeline/lead-origin.service';
 import { OutboundMessageProcessor } from './pipeline/outbound-message.processor';
 import { ConversationFsmService } from './conversations/conversation-fsm.service';
 import { ConversationsController } from './conversations/conversations.controller';
@@ -53,6 +54,7 @@ import { ContactsRepository } from './contacts/contacts.repository';
     ConversationResolverService,
     HistoryImportService,
     InboundMessageProcessor,
+    LeadOriginService,
     OutboundMessageProcessor,
     ConversationFsmService,
     ConversationsService,

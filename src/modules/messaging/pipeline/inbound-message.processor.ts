@@ -14,6 +14,7 @@ import { AgentRouterService } from '../../ai-agents/router/agent-router.service'
 import { OutOfHoursReplyService } from '../../ai-agents/router/out-of-hours-reply.service';
 import { AiAgentRunnerService } from '../../ai-agents/runner/agent-runner.service';
 import { TranscriptionService } from '../messages/transcription.service';
+import { LeadOriginService } from './lead-origin.service';
 import { OutboxService } from '../../automations/outbox/outbox.service';
 import { WatchdogService } from '../../routing/watchdog/watchdog.service';
 import { SalesRecoveryService } from '../../sales-recovery/sales-recovery.service';
@@ -97,6 +98,7 @@ export class InboundMessageProcessor extends WorkerHost {
     private readonly outOfHoursReply: OutOfHoursReplyService,
     private readonly agentRunner: AiAgentRunnerService,
     private readonly transcription: TranscriptionService,
+    private readonly leadOrigin: LeadOriginService,
     private readonly outbox: OutboxService,
     private readonly watchdog: WatchdogService,
     private readonly salesRecovery: SalesRecoveryService,
@@ -129,6 +131,24 @@ export class InboundMessageProcessor extends WorkerHost {
 
       const { contactId, isNew: isNewContact } =
         await this.contactResolver.resolve(organizationId, channelId, message);
+
+      // Controle de origem (site/landing page/Google Ads): a primeira
+      // mensagem de um contato genuinamente novo pode carregar um marcador
+      // `#origem:<slug>` no fim do texto (convém vir de um link
+      // wa.me/…?text=… pré-preenchido no site). Detecta e limpa ANTES de
+      // persistir — nem o cliente nem o time veem o marcador cru no
+      // inbox. Aplicado (tag + metadata do contato) depois que a conversa
+      // existir, mais abaixo. Réplicas de contato já existente não contam
+      // — só a abertura de um lead novo pode setar a origem.
+      let pendingOriginSlug: string | null = null;
+      if (isNewContact && !message.isEcho && !message.isGroup) {
+        const text = message.content?.text;
+        const { originSlug, cleanedText } = this.leadOrigin.detect(text);
+        if (originSlug) {
+          pendingOriginSlug = originSlug;
+          message.content.text = cleanedText;
+        }
+      }
 
       if (message.channelType === ChannelType.INSTAGRAM) {
         const [channel, contact] = await Promise.all([
@@ -207,6 +227,16 @@ export class InboundMessageProcessor extends WorkerHost {
               `Failed to create lead card for conv ${conversationId}: ${err?.message ?? err}`,
             ),
         );
+      }
+
+      if (pendingOriginSlug) {
+        this.leadOrigin
+          .apply(organizationId, contactId, conversationId, pendingOriginSlug)
+          .catch((err) =>
+            this.logger.warn(
+              `Failed to apply lead origin for conv ${conversationId}: ${err?.message ?? err}`,
+            ),
+          );
       }
 
       // Wrap the message persist + outbox emit + lastMessageAt in a single
