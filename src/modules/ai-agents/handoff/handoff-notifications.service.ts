@@ -170,6 +170,11 @@ export class HandoffNotificationsService {
     contactName: string,
     reason: string | null,
     agentId?: string,
+    details: {
+      summary?: string | null;
+      contactPhone?: string | null;
+      areaName?: string | null;
+    } = {},
   ): Promise<void> {
     try {
       const fixedNumbersRaw = this.config.get<string>(
@@ -230,10 +235,18 @@ export class HandoffNotificationsService {
         return;
       }
 
-      const text =
-        `🔔 Tem mensagem no sistema — *${contactName}* está aguardando ` +
-        `atendimento humano${reason ? ` (${reason})` : ''}. Dá uma olhada: ` +
-        `https://app.justinelegal.com.br/inbox`;
+      // Mensagem autossuficiente: o sócio lê no celular e já sabe quem é,
+      // do que se trata e como abrir a conversa, sem entrar no painel antes.
+      const area = details.areaName?.replace(/^Justine\s*/i, '').trim();
+      const lines = [
+        `*Novo atendimento para os sócios*`,
+        `Cliente: *${contactName}*${details.contactPhone ? ` (${details.contactPhone})` : ''}`,
+        ...(area ? [`Área: ${area}`] : []),
+        ...(reason ? [`Motivo: ${reason}`] : []),
+        ...(details.summary ? [`Resumo: ${details.summary}`] : []),
+        `Conversa: https://app.justinelegal.com.br/inbox?conversationId=${conversationId}`,
+      ];
+      const text = lines.join('\n');
 
       for (const number of numbers) {
         try {

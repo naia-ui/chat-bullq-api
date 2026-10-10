@@ -36,7 +36,7 @@ export class TransferToHumanTool implements AiTool {
       summary: {
         type: 'string',
         description:
-          'Optional short summary of the conversation so far so the human picks up faster.',
+          'Resumo curto em PT-BR (nome, assunto, o que o cliente quer, urgência) enviado direto ao sócio por WhatsApp, para ele assumir sem reler a conversa.',
         maxLength: 1000,
       },
     },
@@ -51,10 +51,13 @@ export class TransferToHumanTool implements AiTool {
     const reason =
       String(input.reason ?? '').trim() || 'Handoff sem motivo informado';
 
+    const summary = String(input.summary ?? '').trim() || null;
+
     const result = await this.handoffExecution.execute({
       conversationId: ctx.conversationId,
       agentId: ctx.agentId,
       reason,
+      summary,
     });
 
     this.logger.log(

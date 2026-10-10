@@ -25,7 +25,7 @@ const BUILTIN_TOOL_DESCRIPTIONS: Record<string, string> = {
   tagConversation:
     'tagConversation(tags): marca a conversa com tags pra triagem (ex: "billing", "lead-quente", "duvida-tecnica").',
   transferToHuman:
-    'transferToHuman(reason): escala pra atendente humano. Use SOMENTE quando você não conseguir resolver. Não use pra "fechar ticket" depois de resolver — conversa resolvida fica resolvida.',
+    'transferToHuman(reason, summary): repassa direto aos sócios, que recebem o resumo por WhatsApp. Chame assim que tiver nome, assunto e urgência do cliente, sem fazer perguntas além disso. Não use pra "fechar ticket" depois de resolver — conversa resolvida fica resolvida.',
   delegateToAgent:
     'delegateToAgent(agentId, briefing): transfere a conversa pra outro agent especialista (orquestrador → worker). Handoff é INVISÍVEL ao cliente.',
   handBackToOrchestrator:

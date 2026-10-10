@@ -28,8 +28,9 @@ export class HandoffExecutionService {
     conversationId: string;
     agentId: string;
     reason: string | null;
+    summary?: string | null;
   }): Promise<{ ok: true; transferredAt: string; reason: string | null }> {
-    const { conversationId, agentId, reason } = params;
+    const { conversationId, agentId, reason, summary = null } = params;
 
     // Pausa a IA na conversa + sinaliza que aguarda atendente humano.
     await this.prisma.conversation.update({
@@ -44,7 +45,12 @@ export class HandoffExecutionService {
     await this.handoffNotifications.notifyClientIfOutsideHumanHours(
       conversationId,
     );
-    await this.alertInternalTeamAboutHandoff(conversationId, agentId, reason);
+    await this.alertInternalTeamAboutHandoff(
+      conversationId,
+      agentId,
+      reason,
+      summary,
+    );
 
     return {
       ok: true,
@@ -57,11 +63,18 @@ export class HandoffExecutionService {
     conversationId: string,
     agentId: string,
     reason: string | null,
+    summary: string | null,
   ): Promise<void> {
-    const conversation = await this.prisma.conversation.findUnique({
-      where: { id: conversationId },
-      include: { contact: { select: { name: true, phone: true } } },
-    });
+    const [conversation, agent] = await Promise.all([
+      this.prisma.conversation.findUnique({
+        where: { id: conversationId },
+        include: { contact: { select: { name: true, phone: true } } },
+      }),
+      this.prisma.aiAgent.findUnique({
+        where: { id: agentId },
+        select: { name: true },
+      }),
+    ]);
     if (!conversation) return;
     const contactName =
       conversation.contact?.name ?? conversation.contact?.phone ?? 'Contato';
@@ -70,6 +83,11 @@ export class HandoffExecutionService {
       contactName,
       reason,
       agentId,
+      {
+        summary,
+        contactPhone: conversation.contact?.phone ?? null,
+        areaName: agent?.name ?? null,
+      },
     );
   }
 

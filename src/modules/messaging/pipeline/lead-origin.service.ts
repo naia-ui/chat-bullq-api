@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { AutomationTrigger, Prisma } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { OutboxService } from '../../automations/outbox/outbox.service';
+import { parseAdRef } from '../../ai-agents/router/ad-ref-gate';
 
 /**
  * Controle de origem de lead (site / landing page / Google Ads / etc.).
@@ -43,7 +44,10 @@ export class LeadOriginService {
     const raw = text ?? '';
     const match = raw.match(LeadOriginService.MARKER_PATTERN);
     if (!match) {
-      return { originSlug: null, cleanedText: raw };
+      // Anúncios Meta: "(ref. DM01)" no fim da frase. O texto fica intacto
+      // (o time vê o código no inbox); só a origem é registrada.
+      const ad = parseAdRef(raw);
+      return { originSlug: ad?.code ?? null, cleanedText: raw };
     }
     const originSlug = match[1].toLowerCase();
     const cleanedText = raw.slice(0, match.index).trimEnd();

@@ -9,6 +9,14 @@ import type {
 } from '../classifier/intent.types';
 import { IntentType } from '../classifier/intent.types';
 import { isWithinBusinessHours } from './business-hours.util';
+import {
+  AGENT_BY_AD_PREFIX,
+  TAGS_BY_AD_PREFIX,
+  UNKNOWN_AD_ORIGIN_TAG,
+  isMetaDefaultAdMessage,
+  parseAdRef,
+} from './ad-ref-gate';
+import { matchesMedicalLawTrigger } from './medical-law-gate';
 
 export interface AgentSelection {
   agentId: string;
@@ -94,6 +102,55 @@ export class AgentRouterService {
         skippedOrchestrator: true,
         classifierCostUsd: 0,
       };
+    }
+
+    // 1.7. Campanhas Meta Ads. Ordem de prioridade:
+    //   a) "(ref. XX00)" → agente da área do prefixo (DM, TR, AG, BC, SP);
+    //   b) palavra-chave de Direito Médico (CRM, prontuário, erro médico...);
+    //   c) frase padrão da Meta ("mais informações sobre isso") → etiqueta
+    //      "origem a confirmar" e segue o fluxo normal (a orquestradora
+    //      pergunta o assunto).
+    // Sem o agente da área cadastrado, tudo cai no fluxo normal.
+    const adRef = parseAdRef(latestMessageText);
+    const prefix =
+      adRef && AGENT_BY_AD_PREFIX[adRef.prefix]
+        ? adRef.prefix
+        : matchesMedicalLawTrigger(latestMessageText)
+          ? 'DM'
+          : null;
+    if (prefix) {
+      const areaAgent = await this.prisma.aiAgent.findFirst({
+        where: {
+          organizationId: conversation.organizationId,
+          name: AGENT_BY_AD_PREFIX[prefix],
+          isActive: true,
+          deletedAt: null,
+        },
+        select: { id: true, name: true },
+      });
+      if (areaAgent) {
+        await this.tagConversation(conversation, [
+          ...(TAGS_BY_AD_PREFIX[prefix] ?? []),
+          ...(adRef ? [`origem-${adRef.code}`] : []),
+        ]);
+        this.logger.log({
+          msg: 'agent_selected_ad_ref',
+          prefix,
+          code: adRef?.code ?? null,
+          agentName: areaAgent.name,
+          conversationId: conversation.id,
+        });
+        return {
+          agentId: areaAgent.id,
+          agentName: areaAgent.name,
+          classifiedIntent: IntentType.LEGAL_MATTER,
+          classifierConfidence: 1,
+          skippedOrchestrator: true,
+          classifierCostUsd: 0,
+        };
+      }
+    } else if (isMetaDefaultAdMessage(latestMessageText)) {
+      await this.tagConversation(conversation, [UNKNOWN_AD_ORIGIN_TAG]);
     }
 
     // 2. Carrega threshold da org
@@ -214,6 +271,44 @@ export class AgentRouterService {
     if (!agent) return null; // "Justine Clientes" ainda não foi criada na org.
     if (!wonCard && !existingClientTag) return null; // não é cliente conhecido.
     return agent;
+  }
+
+  /** Best-effort: falha ao etiquetar nunca bloqueia o atendimento. */
+  private async tagConversation(
+    conversation: Conversation,
+    names: string[],
+  ): Promise<void> {
+    try {
+      for (const name of names) {
+        const tag = await this.prisma.tag.upsert({
+          where: {
+            organizationId_name: {
+              organizationId: conversation.organizationId,
+              name,
+            },
+          },
+          update: {},
+          create: { organizationId: conversation.organizationId, name },
+          select: { id: true },
+        });
+        await this.prisma.conversationTag.upsert({
+          where: {
+            conversationId_tagId: {
+              conversationId: conversation.id,
+              tagId: tag.id,
+            },
+          },
+          update: {},
+          create: { conversationId: conversation.id, tagId: tag.id },
+        });
+      }
+    } catch (err) {
+      this.logger.warn({
+        msg: 'ad_campaign_tagging_failed',
+        conversationId: conversation.id,
+        error: (err as Error).message,
+      });
+    }
   }
 
   private async fallbackToOrchestrator(
