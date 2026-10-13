@@ -53,6 +53,11 @@ export class ConversationsController {
   @ApiQuery({ name: 'status', required: false })
   @ApiQuery({ name: 'channelId', required: false })
   @ApiQuery({ name: 'assignedToId', required: false })
+  @ApiQuery({
+    name: 'departmentId',
+    required: false,
+    description: "ID da área, ou 'none' para a caixa de entrada geral (sem área)",
+  })
   @ApiQuery({ name: 'search', required: false })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
@@ -85,6 +90,7 @@ export class ConversationsController {
     @Query('status') status?: string,
     @Query('channelId') channelId?: string,
     @Query('assignedToId') assignedToId?: string,
+    @Query('departmentId') departmentId?: string,
     @Query('search') search?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
@@ -116,6 +122,7 @@ export class ConversationsController {
         status,
         channelId,
         assignedToId,
+        departmentId: departmentId || undefined,
         search,
         archived: archivedScope,
         unreadOnly: unread === 'true' || unread === '1',
@@ -183,6 +190,15 @@ export class ConversationsController {
     @CurrentChannelAccess() access: ChannelAccess,
   ) {
     return this.service.markAsUnread(id, orgId, userId, access);
+  }
+
+  @Get('department-counts')
+  @ApiOperation({ summary: "Conversas abertas por área (chave 'none' = caixa de entrada)" })
+  getDepartmentCounts(
+    @CurrentOrg('id') orgId: string,
+    @CurrentChannelAccess() access: ChannelAccess,
+  ) {
+    return this.service.getDepartmentCounts(orgId, access);
   }
 
   @Get('counts')

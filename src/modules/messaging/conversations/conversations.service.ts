@@ -251,6 +251,7 @@ export class ConversationsService {
       kind?: 'INDIVIDUAL' | 'GROUP';
       tagIds?: string[];
       assignedToId?: string;
+      departmentId?: string;
       search?: string;
       archived?: 'exclude' | 'only' | 'any';
       unreadOnly?: boolean;
@@ -319,6 +320,7 @@ export class ConversationsService {
       kind: isGroupResolved ? 'GROUP' : filters.kind,
       tagIds: filters.tagIds,
       assignedToId: filters.assignedToId,
+      departmentId: filters.departmentId,
       search: filters.search,
       accessibleChannelIds: access === 'ALL' ? undefined : [...access],
       archived: filters.archived,
@@ -419,8 +421,21 @@ export class ConversationsService {
       await this.fsm.transition(id, dto.status, actorId);
     }
 
-    if (dto.departmentId) {
-      await this.repository.update(id, { department: { connect: { id: dto.departmentId } } });
+    // departmentId: string = transfere para a área; null = devolve para a
+    // caixa de entrada geral (sem área). undefined = não mexe.
+    if (dto.departmentId !== undefined) {
+      if (dto.departmentId === null) {
+        await this.repository.update(id, { department: { disconnect: true } });
+      } else {
+        const dept = await this.prisma.department.findFirst({
+          where: { id: dto.departmentId, organizationId, deletedAt: null },
+          select: { id: true },
+        });
+        if (!dept) throw new NotFoundException('Área não encontrada');
+        await this.repository.update(id, {
+          department: { connect: { id: dept.id } },
+        });
+      }
     }
 
     if (dto.subject !== undefined) {
@@ -751,6 +766,31 @@ export class ConversationsService {
     const updated = await this.repository.findById(id);
     this.broadcastUpdate(updated as Conversation | null);
     return updated;
+  }
+
+  /**
+   * Contagem de conversas abertas (não arquivadas, não encerradas) por área.
+   * Chave 'none' = caixa de entrada geral (sem área).
+   */
+  async getDepartmentCounts(
+    organizationId: string,
+    access: ChannelAccess = 'ALL',
+  ): Promise<Record<string, number>> {
+    const rows = await this.prisma.conversation.groupBy({
+      by: ['departmentId'],
+      where: {
+        organizationId,
+        deletedAt: null,
+        isArchived: false,
+        isGroup: false,
+        status: { not: ConversationStatus.CLOSED },
+        ...(access === 'ALL' ? {} : { channelId: { in: [...access] } }),
+      },
+      _count: { _all: true },
+    });
+    const out: Record<string, number> = {};
+    for (const r of rows) out[r.departmentId ?? 'none'] = r._count._all;
+    return out;
   }
 
   async getStatusCounts(organizationId: string, access: ChannelAccess = 'ALL') {

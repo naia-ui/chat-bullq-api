@@ -19,6 +19,9 @@ export interface InboxFilters {
   /** Tag ids applied to the conversation OR its contact. ANY match. */
   tagIds?: string[];
   assignedToId?: string;
+  /** Área (Department): id específico, ou 'none' = sem área (caixa de entrada
+   *  geral). Undefined = ignora o filtro. */
+  departmentId?: string;
   search?: string;
   accessibleChannelIds?: string[];
   /**
@@ -126,6 +129,10 @@ export class ConversationsRepository {
       ];
     }
     if (filters.assignedToId) where.assignedToId = filters.assignedToId;
+    if (filters.departmentId) {
+      where.departmentId =
+        filters.departmentId === 'none' ? null : filters.departmentId;
+    }
     if (filters.stuckOnly) where.isStuck = true;
     if (filters.search) {
       where.OR = [
@@ -213,6 +220,7 @@ export class ConversationsRepository {
           assignedTo: {
             select: { id: true, name: true, avatarUrl: true },
           },
+          department: { select: { id: true, name: true } },
           messages: {
             orderBy: { createdAt: 'desc' },
             take: 1,
