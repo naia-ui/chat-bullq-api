@@ -93,6 +93,20 @@ export const FIELDS_BY_TRIGGER: Record<
     contactId: (p) => p.contactId,
     conversationId: (p) => p.conversationId,
   },
+  [AutomationTrigger.CARD_STAGE_CHANGED]: {
+    cardId: (p) => (p as any).cardId,
+    pipelineId: (p) => (p as any).pipelineId,
+    fromStageId: (p) => (p as any).fromStageId,
+    toStageId: (p) => (p as any).toStageId,
+    // A regra do funil de captação condiciona por aqui:
+    //   toStageType equals WON  → etapa de contrato assinado
+    toStageType: (p) => (p as any).toStageType,
+    toStageKey: (p) => (p as any).toStageKey,
+    toStageName: (p) => (p as any).toStageName,
+    cardStatus: (p) => (p as any).cardStatus,
+    contactId: (p) => p.contactId,
+    conversationId: (p) => p.conversationId,
+  },
 };
 
 // ─── Evaluator ───────────────────────────────────────────────────────

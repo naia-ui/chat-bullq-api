@@ -15,6 +15,7 @@ import { OutOfHoursReplyService } from '../../ai-agents/router/out-of-hours-repl
 import { AiAgentRunnerService } from '../../ai-agents/runner/agent-runner.service';
 import { TranscriptionService } from '../messages/transcription.service';
 import { LeadOriginService } from './lead-origin.service';
+import { ClickRef } from '../../conversions/origin';
 import { OutboxService } from '../../automations/outbox/outbox.service';
 import { WatchdogService } from '../../routing/watchdog/watchdog.service';
 import { SalesRecoveryService } from '../../sales-recovery/sales-recovery.service';
@@ -141,11 +142,17 @@ export class InboundMessageProcessor extends WorkerHost {
       // existir, mais abaixo. Réplicas de contato já existente não contam
       // — só a abertura de um lead novo pode setar a origem.
       let pendingOriginSlug: string | null = null;
+      let pendingClickRef: ClickRef | null = null;
       if (isNewContact && !message.isEcho && !message.isGroup) {
         const text = message.content?.text;
-        const { originSlug, cleanedText } = this.leadOrigin.detect(text);
-        if (originSlug) {
+        const { originSlug, clickRef, cleanedText } =
+          this.leadOrigin.detect(text);
+        // O identificador do clique conta como origem mesmo sem slug: é ele
+        // que devolve a conversão ao Google. Nos dois casos o marcador sai
+        // do texto antes de persistir.
+        if (originSlug || clickRef) {
           pendingOriginSlug = originSlug;
+          pendingClickRef = clickRef;
           message.content.text = cleanedText;
         }
       }
@@ -229,9 +236,20 @@ export class InboundMessageProcessor extends WorkerHost {
         );
       }
 
-      if (pendingOriginSlug) {
+      if (pendingOriginSlug || pendingClickRef) {
+        // Sem slug, a origem vira a plataforma do clique — o lead ainda
+        // precisa de uma tag legível no inbox.
+        const slug =
+          pendingOriginSlug ??
+          (pendingClickRef?.kind === 'fbclid' ? 'meta-anuncio' : 'google-ads');
         this.leadOrigin
-          .apply(organizationId, contactId, conversationId, pendingOriginSlug)
+          .apply(
+            organizationId,
+            contactId,
+            conversationId,
+            slug,
+            pendingClickRef,
+          )
           .catch((err) =>
             this.logger.warn(
               `Failed to apply lead origin for conv ${conversationId}: ${err?.message ?? err}`,

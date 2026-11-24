@@ -12,6 +12,9 @@ export const ACTION_TYPES = [
   'move_pipeline_stage',
   'assign_user',
   'send_message',
+  // Devolve a conversão à plataforma de anúncio (Meta/Google). Não envia
+  // nada na hora: põe na fila, que respeita carência, janela e chaves.
+  'send_conversion',
 ] as const;
 
 export type ActionType = (typeof ACTION_TYPES)[number];

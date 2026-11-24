@@ -3,6 +3,7 @@ import { AutomationTrigger, Prisma } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { OutboxService } from '../../automations/outbox/outbox.service';
 import { parseAdRef } from '../../ai-agents/router/ad-ref-gate';
+import { ClickRef, parseClickRef, stripClickRef } from '../../conversions/origin';
 
 /**
  * Controle de origem de lead (site / landing page / Google Ads / etc.).
@@ -39,19 +40,26 @@ export class LeadOriginService {
    */
   detect(text: string | null | undefined): {
     originSlug: string | null;
+    clickRef: ClickRef | null;
     cleanedText: string;
   } {
-    const raw = text ?? '';
+    // Identificador do clique (`GT:g.<gclid>`), quando o link do site o
+    // embutiu. Sai do texto antes de qualquer coisa: é ele que fecha o
+    // circuito com o Google, e ninguém precisa vê-lo no inbox.
+    const original = text ?? '';
+    const clickRef = parseClickRef(original);
+    const raw = clickRef ? stripClickRef(original) : original;
+
     const match = raw.match(LeadOriginService.MARKER_PATTERN);
     if (!match) {
       // Anúncios Meta: "(ref. DM01)" no fim da frase. O texto fica intacto
       // (o time vê o código no inbox); só a origem é registrada.
       const ad = parseAdRef(raw);
-      return { originSlug: ad?.code ?? null, cleanedText: raw };
+      return { originSlug: ad?.code ?? null, clickRef, cleanedText: raw };
     }
     const originSlug = match[1].toLowerCase();
     const cleanedText = raw.slice(0, match.index).trimEnd();
-    return { originSlug, cleanedText };
+    return { originSlug, clickRef, cleanedText };
   }
 
   /**
@@ -64,6 +72,7 @@ export class LeadOriginService {
     contactId: string,
     conversationId: string,
     originSlug: string,
+    clickRef: ClickRef | null = null,
   ): Promise<void> {
     try {
       const contact = await this.prisma.contact.findUnique({
@@ -81,6 +90,12 @@ export class LeadOriginService {
             ...existingMetadata,
             origin: originSlug,
             originDetectedAt: new Date().toISOString(),
+            // Identificador do clique, quando veio. É dado pseudonimizado
+            // e serve só para devolver a conversão à plataforma — precisa
+            // constar na política de privacidade do site.
+            ...(clickRef
+              ? { clickKind: clickRef.kind, clickId: clickRef.value }
+              : {}),
           } as Prisma.InputJsonValue,
         },
       });

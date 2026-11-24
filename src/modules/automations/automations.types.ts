@@ -62,12 +62,28 @@ export interface ConversationAssignedPayload extends BaseEventPayload {
   toAssigneeId: string;
 }
 
+export interface CardStageChangedPayload extends BaseEventPayload {
+  cardId: string;
+  pipelineId: string;
+  fromStageId: string;
+  toStageId: string;
+  // Tipo da etapa de destino (NORMAL | WON | LOST), denormalizado para a
+  // condição poder filtrar "só quando fechou ganho" sem ir ao banco.
+  toStageType: string;
+  // Chave semântica e nome da etapa de destino — a chave é estável, o nome
+  // é editável na UI. Dá para condicionar por qualquer um dos dois.
+  toStageKey: string | null;
+  toStageName: string;
+  cardStatus: string;
+}
+
 export type AutomationEventPayload =
   | TagAddedPayload
   | TagRemovedPayload
   | MessageReceivedPayload
   | ConversationStatusChangedPayload
-  | ConversationAssignedPayload;
+  | ConversationAssignedPayload
+  | CardStageChangedPayload;
 
 // Discriminated union by trigger — used by the listener factory and by
 // tests to construct events with the correct payload shape.
@@ -77,6 +93,7 @@ export type TriggerToPayload = {
   [AutomationTrigger.MESSAGE_RECEIVED]: MessageReceivedPayload;
   [AutomationTrigger.CONVERSATION_STATUS_CHANGED]: ConversationStatusChangedPayload;
   [AutomationTrigger.CONVERSATION_ASSIGNED]: ConversationAssignedPayload;
+  [AutomationTrigger.CARD_STAGE_CHANGED]: CardStageChangedPayload;
 };
 
 // ─── BullMQ job shape ────────────────────────────────────────────────

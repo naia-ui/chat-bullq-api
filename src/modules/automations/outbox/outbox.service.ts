@@ -144,6 +144,13 @@ export class OutboxService {
       case AutomationTrigger.CONVERSATION_ASSIGNED: {
         return null;
       }
+      case AutomationTrigger.CARD_STAGE_CHANGED: {
+        // Dedup OFF de propósito. Mover o card para "Contrato assinado",
+        // voltar e mover de novo são dois fatos reais e precisam disparar
+        // duas vezes. A garantia de não enviar a conversão duas vezes é do
+        // @@unique de conversion_events, não daqui.
+        return null;
+      }
     }
     return null;
   }

@@ -21,6 +21,7 @@ import { ChannelAccessModule } from './modules/iam/channel-access/channel-access
 import { AiAgentsModule } from './modules/ai-agents/ai-agents.module';
 import { InboxViewsModule } from './modules/inbox-views/inbox-views.module';
 import { PipelinesModule } from './modules/pipelines/pipelines.module';
+import { ConversionsModule } from './modules/conversions/conversions.module';
 import { SegmentsModule } from './modules/segments/segments.module';
 import { ProjectsModule } from './modules/projects/projects.module';
 import { SalesRecoveryModule } from './modules/sales-recovery/sales-recovery.module';
@@ -66,6 +67,7 @@ import redisConfig from './config/redis.config';
     AiAgentsModule,
     InboxViewsModule,
     PipelinesModule,
+    ConversionsModule,
     SegmentsModule,
     ProjectsModule,
     SalesRecoveryModule,

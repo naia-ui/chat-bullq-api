@@ -4,9 +4,11 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { CardStatus, PipelineStageType } from '@prisma/client';
+import { AutomationTrigger, CardStatus, PipelineStageType } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
+import { OutboxService } from '../automations/outbox/outbox.service';
+import { ConversionsService } from '../conversions/conversions.service';
 import {
   CreateCardDto,
   CreatePipelineDto,
@@ -29,6 +31,8 @@ export class PipelinesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly realtime: RealtimeGateway,
+    private readonly outbox: OutboxService,
+    private readonly conversions: ConversionsService,
   ) {}
 
   // ─── Pipelines ─────────────────────────────────
@@ -465,6 +469,37 @@ export class PipelinesService {
           closedAt: newClosedAt,
         },
       });
+
+      if (!sameStage) {
+        // Conversão pendente de outra etapa deste card perde sentido: a
+        // etapa foi desfeita antes de a plataforma receber. Cancelar junto
+        // com o movimento, na mesma transação, é o que garante que
+        // "corrigi um clique errado" realmente impede o envio.
+        await this.conversions.cancelPendingOnMove(tx, cardId, dto.toStageId);
+
+        // Gatilho do funil de captação. Só é emitido com contato: o outbox
+        // exige contactId para serializar a execução por lead, e sem
+        // contato não há como casar a conversão na plataforma.
+        if (card.contactId) {
+          await this.outbox.enqueue(
+            tx,
+            AutomationTrigger.CARD_STAGE_CHANGED,
+            {
+              organizationId,
+              contactId: card.contactId,
+              conversationId: card.conversationId ?? undefined,
+              cardId,
+              pipelineId: card.pipelineId,
+              fromStageId,
+              toStageId: dto.toStageId,
+              toStageType: targetStage.type,
+              toStageKey: targetStage.key ?? null,
+              toStageName: targetStage.name,
+              cardStatus: newStatus,
+            },
+          );
+        }
+      }
     });
 
     this.realtime.emitToOrg(organizationId, 'card:moved', {

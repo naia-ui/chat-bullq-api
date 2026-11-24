@@ -210,6 +210,7 @@ model Organization {
   products      Product[]
   segments      Segment[]
   projects      Project[]
+  conversionEvents ConversionEvent[]
 
   @@map("organizations")
 }
@@ -1590,6 +1591,11 @@ enum AutomationTrigger {
   MESSAGE_RECEIVED
   CONVERSATION_STATUS_CHANGED
   CONVERSATION_ASSIGNED
+  // Card mudou de etapa no Kanban. É o gatilho do funil de captação:
+  // etapa "Contrato assinado" (type WON) devolve a conversão à plataforma
+  // de anúncio. Só é emitido quando o card tem contato — o outbox exige
+  // contactId para serializar a execução por lead.
+  CARD_STAGE_CHANGED
 }
 
 enum AutomationRunStatus {
@@ -1728,4 +1734,72 @@ model AutomationRun {
   @@index([traceId], name: "idx_run_trace")
   @@index([status, startedAt(sort: Desc)], name: "idx_run_status_time")
   @@map("automation_runs")
+}
+
+// ─── Conversões de volta à plataforma de anúncio ──────────────────────
+//
+// Fecha o circuito anúncio → conversa → contrato → plataforma. Uma linha
+// por (card, etapa, plataforma): o @@unique garante que a mesma conversão
+// nunca sai duas vezes, mesmo com reentrega de evento ou card movido de
+// ida e volta.
+//
+// O que NUNCA entra aqui: telefone ou e-mail em claro, nome do lead, fato
+// do caso, nome da área. Só o identificador de correspondência já
+// pseudonimizado (hash do telefone, gclid ou ctwa_clid) e um nome de
+// evento neutro. Ver CONVERSOES.md.
+
+enum ConversionPlatform {
+  META
+  GOOGLE
+}
+
+enum ConversionStatus {
+  PENDING // na fila, dentro da carência
+  SENT // aceito pela plataforma
+  SKIPPED // sem identificador, fora da janela ou plataforma desligada
+  FAILED // recusado pela plataforma; reprocessável
+  CANCELLED // etapa desfeita antes de sair
+}
+
+model ConversionEvent {
+  id             String             @id @default(cuid())
+  organizationId String             @map("organization_id")
+  cardId         String             @map("card_id")
+  contactId      String?            @map("contact_id")
+  platform       ConversionPlatform
+  // Nome neutro do evento (Lead | Schedule | Contrato). Nunca a área.
+  eventName      String             @map("event_name")
+  stageId        String             @map("stage_id")
+  // Rótulo da etapa no momento do disparo (a etapa é editável depois).
+  stageLabel     String             @map("stage_label")
+  // phone_hash | gclid | ctwa_clid — como a plataforma vai casar o evento.
+  matchKind      String             @map("match_kind")
+  // Valor já pseudonimizado. Telefone entra aqui só como SHA-256.
+  matchValue     String             @map("match_value")
+  // Código do anúncio, ex. "DM01" — serve de auditoria e relatório.
+  campaignCode   String?            @map("campaign_code")
+  value          Decimal?           @db.Decimal(14, 2)
+  currency       String             @default("BRL")
+  // Quando o fato aconteceu (movimento do card). Nunca é ajustado para
+  // caber na janela da plataforma: fora da janela, o evento é descartado.
+  occurredAt     DateTime           @map("occurred_at")
+  // Fim da carência: antes disso nada sai, é a janela para desfazer.
+  releaseAt      DateTime           @map("release_at")
+  status         ConversionStatus   @default(PENDING)
+  attemptCount   Int                @default(0) @map("attempt_count")
+  lastError      String?            @map("last_error") @db.Text
+  // true = simulação: monta o envio, registra e não chama a plataforma.
+  dryRun         Boolean            @default(true) @map("dry_run")
+  sentAt         DateTime?          @map("sent_at")
+  // Resposta da plataforma (sem dado pessoal) para auditoria.
+  response       Json?
+  createdAt      DateTime           @default(now()) @map("created_at")
+  updatedAt      DateTime           @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([cardId, stageId, platform], name: "uq_conversion_card_stage_platform")
+  @@index([status, releaseAt], name: "idx_conversion_due")
+  @@index([organizationId, createdAt(sort: Desc)], name: "idx_conversion_org_time")
+  @@map("conversion_events")
 }
